@@ -1,0 +1,29 @@
+# Dependencies and build output
+node_modules/
+.next/
+coverage/
+*.tsbuildinfo
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+
+# Runtime output
+*.log
+*.pid
+photon-worker.pid
+photon-worker.log
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Temporary files
+*.tmp
+*.temp

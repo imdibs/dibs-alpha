@@ -1,0 +1,6 @@
+import { notFound } from "next/navigation";
+import { currentUser } from "@/lib/auth";
+import { db } from "@/lib/db";
+import { ProfileForm } from "@/components/ProfileForm";
+import { ContactButton } from "@/components/ContactButton";
+export default async function ListingPage({params}:{params:Promise<{id:string}>}){const user=await currentUser();if(!user)return <ProfileForm/>;const {id}=await params;const result=await db().from("listings").select("*,seller:users!seller_id(name)").eq("id",id).maybeSingle();const listing=result.data;if(!listing||listing.status==="removed")notFound();return <div className="listing"><div><img src={listing.image_urls[0]} alt={listing.title}/></div><div><p className="meta">{listing.city} · {listing.condition.replace("_"," ")}</p><h1>{listing.title}</h1><div className="price">${(listing.price_cents/100).toLocaleString()}</div><p>{listing.description}</p><p className="muted">Sold by {listing.seller.name}</p>{listing.seller_id===user.id?<div className="notice">This is your listing.</div>:<ContactButton listingId={listing.id}/>}</div></div>}

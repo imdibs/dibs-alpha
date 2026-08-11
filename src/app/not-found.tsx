@@ -1,0 +1,2 @@
+import Link from "next/link";
+export default function NotFound(){return <div className="panel"><h1>Not found</h1><p className="muted">This page or listing is no longer available.</p><Link className="button" href="/">Ask Dibs</Link></div>}

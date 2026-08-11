@@ -1,0 +1,3 @@
+"use client";
+import { useState } from "react";
+export function ContactButton({listingId}:{listingId:string}){const [error,setError]=useState("");const [busy,setBusy]=useState(false);async function contact(){setBusy(true);const r=await fetch("/api/conversations",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({listingId})});const data=await r.json();if(!r.ok){setError(data.error);setBusy(false);return}location.href=`/conversations/${data.id}`}return <>{error&&<p className="error">{error}</p>}<button className="purple" onClick={contact} disabled={busy}>{busy?"Opening…":"Message seller"}</button></>}
