@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { currentUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { listingSchema } from "@/lib/validation";
+import { capturePostHog } from "@/lib/posthog";
 
 export async function POST(request: Request) {
   const user = await currentUser();
@@ -9,7 +10,7 @@ export async function POST(request: Request) {
   const form = await request.formData();
   const parsed = listingSchema.safeParse(Object.fromEntries(form.entries()));
   const photos = form.getAll("photos").filter((value): value is File => value instanceof File && value.size > 0);
-  if (!parsed.success || photos.length < 1 || photos.length > 6) return NextResponse.json({ error: "Complete every field and add 1–6 photos." }, { status: 400 });
+  if (!parsed.success || photos.length < 2 || photos.length > 6) return NextResponse.json({ error: "Complete every field and add 2 to 6 photos." }, { status: 400 });
   if (photos.some(photo => photo.size > 8_000_000 || !photo.type.startsWith("image/"))) return NextResponse.json({ error: "Each photo must be an image under 8 MB." }, { status: 400 });
   const client = db();
   const imageUrls: string[] = [];
@@ -23,8 +24,10 @@ export async function POST(request: Request) {
   const listing = await client.from("listings").insert({
     seller_id: user.id, title: parsed.data.title, description: parsed.data.description,
     price_cents: Math.round(parsed.data.price * 100), condition: parsed.data.condition,
-    city: parsed.data.city, image_urls: imageUrls, status: "active",
-  }).select("id").single();
+    city: parsed.data.city, image_urls: imageUrls, status: "active", published_at: new Date().toISOString(),
+  }).select("id,public_token").single();
   if (listing.error) return NextResponse.json({ error: "Could not publish listing." }, { status: 500 });
-  return NextResponse.json({ id: listing.data.id }, { status: 201 });
+  capturePostHog({ event: "listing_created", distinctId: user.id, properties: { listing_id: listing.data.id, condition: parsed.data.condition, city: parsed.data.city, price_cents: Math.round(parsed.data.price * 100), seller_or_buyer_role: "seller" } });
+  capturePostHog({ event: "sell_request", distinctId: user.id, properties: { city: parsed.data.city, channel: "web" } });
+  return NextResponse.json({ id: listing.data.id, publicToken: listing.data.public_token }, { status: 201 });
 }

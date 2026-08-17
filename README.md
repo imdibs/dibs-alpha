@@ -11,7 +11,7 @@ The smallest useful Dibs loop: create a listing, ask for an item in natural lang
 
 ## Private iMessage relay
 
-Before starting the AI-enabled worker, run migrations `002`, `003`, `004`, and `005` in order in the Supabase SQL editor. An authenticated inbound Photon identity is normalized and automatically recognized as a Dibs user; email is not required for iMessage search, selling, buying, or relay conversations. Existing Alpha users may still be linked manually as a fallback:
+Before starting the AI-enabled worker, run migrations `002` through `006` in order in the Supabase SQL editor. An authenticated inbound Photon identity is normalized and automatically recognized as a Dibs user; email is not required for iMessage search, selling, buying, or relay conversations. Existing Alpha users may still be linked manually as a fallback:
 
 ```sql
 update users set imessage_address = '+13055550123' where email = 'buyer@example.com';
@@ -22,7 +22,9 @@ Phone identities must use E.164 (`+` plus country code and digits); iMessage ema
 
 The worker accepts only provider events explicitly marked `inbound`, uses the provider sender identity rather than phone numbers typed into message text, claims each parent Photon message ID once, and records Spectrum's outbound message IDs separately. Text, one-photo, and grouped text/photo messages are supported; grouped content remains one inbound event. Do not start the updated worker until migrations `002`, `003`, and `004` are present.
 
-Seller drafts accept up to six JPEG, PNG, WebP, GIF, HEIC, or HEIF photos, at most 8 MB each. Photos are uploaded from their real attachment bytes to `listing-images`. Publishing, removal, sold status, and price changes require a separate explicit confirmation message. Cancelled unpublished drafts have their uploaded files removed.
+Seller drafts require two to six JPEG, PNG, WebP, GIF, HEIC, or HEIF photos, at most 8 MB each. Photos are uploaded from their real attachment bytes to `listing-images`. Publishing, removal, sold status, and price changes require a separate explicit confirmation message. Cancelled unpublished drafts have their uploaded files removed.
+
+Verified listings receive a stable opaque `/l/{token}` public URL. Public pages expose only buyer-facing listing fields, retain inactive listings without exposing seller contact data, and record first-party page, CTA, activation, conversation, and deal-signal events. Apply migration `006` before deploying code that uses public listing URLs or product events.
 
 ## Photon iMessage worker
 
@@ -31,6 +33,16 @@ Add `PHOTON_PROJECT_ID`, `PHOTON_PROJECT_SECRET`, and the existing Supabase vari
 The AI worker uses the direct OpenAI Responses API and requires explicit `DIBS_AI_PROVIDER=openai`, `DIBS_AI_MODEL`, and `DIBS_AI_API_KEY` values. The example uses the cost-efficient `gpt-5.6-luna`, but the model remains configurable without code changes. Credentials are never inferred from unrelated environment variables. `DIBS_AI_TIMEOUT_MS` defaults to 15000. If AI is unavailable, Dibs preserves structured state and does not infer or execute marketplace actions.
 
 The legacy web marketplace still requires email and password authentication; a phone identity alone never grants a web session. Alpha web auth has no email verification or password reset, so keep launch invite-only and handle resets manually.
+
+## Public website onboarding
+
+The standalone website submits phone onboarding directly to `/api/onboarding`. Local requests are allowed from `http://127.0.0.1:3001` and `http://localhost:3001` (the existing port `4200` development origins remain allowed). For production, set `DIBS_WEB_ORIGINS` to the exact deployed website origin. The repository does not establish that production origin, so replace the placeholder rather than deploying it literally:
+
+```env
+DIBS_WEB_ORIGINS=https://<actual-production-dibs-web-origin>
+```
+
+Multiple trusted origins may be comma-separated. Origins are matched exactly; do not use `*`. The deployed website should use `NEXT_PUBLIC_DIBS_API_URL=https://dibs.chat` for its public backend URL.
 
 ## Deploy
 

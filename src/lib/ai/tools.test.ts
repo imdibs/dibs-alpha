@@ -3,8 +3,8 @@ import type { MessagingSession } from "../marketplace";
 import type { Listing } from "../types";
 import { createToolExecutor, type ToolDependencies } from "./tools";
 
-const trusted = { userId: "trusted-user", normalizedIdentity: "+13055550123", inboundMessageId: "inbound-1", photonSpaceId: "space-1", defaultCity: "Miami, FL" };
-const draft = { title: "PS5 DualSense controller", category: "electronics" as const, age: "Bought 2 months ago.", functionality: "Works perfectly.", defects: "No scratches or stick drift.", includedItems: "Includes controller and cable.", packaging: "No original box.", condition: "like_new" as const, priceCents: 4000, city: "Miami", photos: [{ id: "p", path: "trusted-user/p.jpg", url: "https://photo" }] };
+const trusted = { userId: "trusted-user", normalizedIdentity: "+13055550123", inboundMessageId: "inbound-1", photonSpaceId: "space-1", defaultCity: "Miami, FL", currentMessageText: "yes" };
+const draft = { title: "PS5 DualSense controller", category: "electronics" as const, age: "Bought 2 months ago.", functionality: "Works perfectly.", defects: "No scratches or stick drift.", includedItems: "Includes controller and cable.", packaging: "No original box.", condition: "like_new" as const, priceCents: 4000, city: "Miami", photos: [{ id: "p", path: "trusted-user/p.jpg", url: "https://photo" }, { id: "q", path: "trusted-user/q.jpg", url: "https://photo-2" }] };
 const session = (overrides: Partial<MessagingSession> = {}): MessagingSession => ({
   identity: trusted.normalizedIdentity, user_id: trusted.userId, photon_space_id: trusted.photonSpaceId,
   recent_listing_ids: [], recent_conversation_ids: [], recent_owned_listing_ids: [], context_kind: "seller",
@@ -24,20 +24,20 @@ describe("actor-bound marketplace AI tools", () => {
       saveSession: vi.fn(async (_identity, patch) => { state = { ...state, ...patch }; }),
       getListing: vi.fn(async id => id === owned.id ? owned as never : id === published?.id ? published as never : null), getOwned: vi.fn(async () => [owned]),
       createListing: vi.fn(async (userId, input, id) => {
-        published = { id: id!, seller_id: userId, title: input.title!, description: [input.age, input.functionality, input.defects, input.includedItems, input.packaging].join(" "), price_cents: input.priceCents!, condition: input.condition!, city: input.city!, image_urls: input.photos.map((photo: { url: string }) => photo.url), status: "active", created_at: "now" };
+        published = { id: id!, seller_id: userId, title: input.title!, description: [input.age, input.functionality, input.defects, input.includedItems, input.packaging].join(" "), price_cents: input.priceCents!, condition: input.condition!, city: input.city!, image_urls: input.photos.map((photo: { url: string }) => photo.url), status: "draft", created_at: "now", public_token: "AbCdEf123456" };
         return { id: id! };
-      }), updateListing: vi.fn(async () => undefined), deleteDraftPhotos: vi.fn(async () => undefined),
+      }), activateListing: vi.fn(async () => { if (published) published = { ...published, status: "active" }; }), updateListing: vi.fn(async () => undefined), deleteDraftPhotos: vi.fn(async () => undefined), recordEvent: vi.fn(async () => undefined),
     };
   });
 
-  it("patches all seller fields in one validated operation and creates a versioned confirmation", async () => {
+  it("patches all seller fields in one validated operation without bypassing review", async () => {
     const execute = createToolExecutor(trusted, deps);
     state = session({ seller_draft: { photos: draft.photos }, seller_draft_version: 4 });
     const { photos: _photos, ...patch } = draft;
     const result = await execute({ name: "updateSellerDraft", arguments: { patch } });
     expect(result).toMatchObject({ ok: true, data: { version: 5, missingField: null, readyToReview: true } });
     expect(state.seller_draft).toMatchObject({ title: "PS5 DualSense controller", condition: "like_new", priceCents: 4000, city: "Miami" });
-    expect(state.pending_listing_action).toEqual({ type: "publish", draftVersion: 5 });
+    expect(state.pending_listing_action).toBeNull();
   });
 
   it("merges multiple buyer-facing seller facts and returns the captured draft", async () => {
@@ -94,7 +94,7 @@ describe("actor-bound marketplace AI tools", () => {
 
   it("publishes only a matching complete draft version and always uses the trusted actor", async () => {
     const execute = createToolExecutor(trusted, deps);
-    state = session({ seller_draft: draft, seller_draft_version: 7, pending_listing_action: { type: "publish", draftVersion: 7 } });
+    state = session({ seller_draft: draft, seller_draft_version: 7, pending_listing_action: { type: "publish", draftVersion: 7, preparedByInboundMessageId: "review-message" } });
     expect((await execute({ name: "publishListing", arguments: { expectedDraftVersion: 6 } })).ok).toBe(false);
     expect(deps.createListing).not.toHaveBeenCalled();
     expect((await execute({ name: "publishListing", arguments: { expectedDraftVersion: 7 } })).ok).toBe(true);
@@ -103,23 +103,32 @@ describe("actor-bound marketplace AI tools", () => {
     expect(state.pending_listing_action).toBeNull();
   });
 
+  it("rejects publishing in the same inbound turn as the review", async () => {
+    state = session({ seller_draft: draft, seller_draft_version: 7 });
+    const execute = createToolExecutor(trusted, deps);
+    expect((await execute({ name: "reviewSellerDraft", arguments: {} })).ok).toBe(true);
+    const result = await execute({ name: "publishListing", arguments: { expectedDraftVersion: 7 } });
+    expect(result).toMatchObject({ ok: false, error: "Publishing needs a separate explicit confirmation." });
+    expect(deps.createListing).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["missing listing", null],
-    ["wrong actor", { ...owned, id: "publish-id", seller_id: "other-user", title: draft.title, description: [draft.age, draft.functionality, draft.defects, draft.includedItems, draft.packaging].join(" "), price_cents: draft.priceCents, condition: draft.condition, city: draft.city, image_urls: ["https://photo"] }],
-    ["mismatched fields", { ...owned, id: "publish-id", seller_id: trusted.userId, title: draft.title, description: "wrong", price_cents: draft.priceCents, condition: draft.condition, city: draft.city, image_urls: ["https://photo"] }],
+    ["wrong actor", { ...owned, id: "publish-id", seller_id: "other-user", title: draft.title, description: [draft.age, draft.functionality, draft.defects, draft.includedItems, draft.packaging].join(" "), price_cents: draft.priceCents, condition: draft.condition, city: draft.city, image_urls: draft.photos.map(photo => photo.url) }],
+    ["mismatched fields", { ...owned, id: "publish-id", seller_id: trusted.userId, title: draft.title, description: "wrong", price_cents: draft.priceCents, condition: draft.condition, city: draft.city, image_urls: draft.photos.map(photo => photo.url) }],
   ] as const)("keeps the draft when publish verification finds %s", async (_label, verification) => {
-    state = session({ seller_draft: draft, seller_draft_version: 7, pending_listing_action: { type: "publish", draftVersion: 7, listingId: "publish-id" } });
+    state = session({ seller_draft: draft, seller_draft_version: 7, pending_listing_action: { type: "publish", draftVersion: 7, listingId: "publish-id", preparedByInboundMessageId: "review-message" } });
     deps.createListing = vi.fn(async () => ({ id: "publish-id" }));
     deps.getListing = vi.fn(async () => verification as never);
     const result = await createToolExecutor(trusted, deps)({ name: "publishListing", arguments: { expectedDraftVersion: 7 } });
     expect(result).toMatchObject({ ok: false });
     expect(state.seller_draft).toEqual(draft);
-    expect(state.pending_listing_action).toEqual({ type: "publish", draftVersion: 7, listingId: "publish-id" });
+    expect(state.pending_listing_action).toEqual({ type: "publish", draftVersion: 7, listingId: "publish-id", preparedByInboundMessageId: "review-message" });
   });
 
   it("retries verification without creating a duplicate listing", async () => {
-    const existing: Listing = { id: "publish-id", seller_id: trusted.userId, title: draft.title, description: [draft.age, draft.functionality, draft.defects, draft.includedItems, draft.packaging].join(" "), price_cents: draft.priceCents, condition: draft.condition, city: draft.city, image_urls: ["https://photo"], status: "active", created_at: "now" };
-    state = session({ seller_draft: draft, seller_draft_version: 7, pending_listing_action: { type: "publish", draftVersion: 7, listingId: existing.id } });
+    const existing: Listing = { id: "publish-id", seller_id: trusted.userId, title: draft.title, description: [draft.age, draft.functionality, draft.defects, draft.includedItems, draft.packaging].join(" "), price_cents: draft.priceCents, condition: draft.condition, city: draft.city, image_urls: draft.photos.map(photo => photo.url), status: "active", created_at: "now", public_token: "AbCdEf123456" };
+    state = session({ seller_draft: draft, seller_draft_version: 7, pending_listing_action: { type: "publish", draftVersion: 7, listingId: existing.id, preparedByInboundMessageId: "review-message" } });
     deps.getListing = vi.fn(async () => existing as never);
     const result = await createToolExecutor(trusted, deps)({ name: "publishListing", arguments: { expectedDraftVersion: 7 } });
     expect(result).toMatchObject({ ok: true, data: { published: true, verified: true } });
@@ -127,11 +136,12 @@ describe("actor-bound marketplace AI tools", () => {
   });
 
   it("requires two calls for owned listing mutations and binds ownership server-side", async () => {
-    const execute = createToolExecutor(trusted, deps);
-    const first = await execute({ name: "updateOwnedListingPrice", arguments: { listingNumber: 1, priceCents: 27500 } });
+    const prepare = createToolExecutor(trusted, deps);
+    const first = await prepare({ name: "updateOwnedListingPrice", arguments: { listingNumber: 1, priceCents: 27500 } });
     expect(first).toMatchObject({ ok: true, data: { confirmationRequired: true } });
     expect(deps.updateListing).not.toHaveBeenCalled();
-    const second = await execute({ name: "updateOwnedListingPrice", arguments: { listingNumber: 1, priceCents: 27500, confirm: true } });
+    const confirm = createToolExecutor({ ...trusted, inboundMessageId: "inbound-2" }, deps);
+    const second = await confirm({ name: "updateOwnedListingPrice", arguments: { listingNumber: 1, priceCents: 27500, confirm: true } });
     expect(second).toMatchObject({ ok: true, data: { updated: true } });
     expect(deps.updateListing).toHaveBeenCalledWith("trusted-user", "owned-1", { price_cents: 27500 });
   });

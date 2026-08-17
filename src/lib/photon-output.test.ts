@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { OutboundMessage } from "./messaging";
+import { followupScheduleRequest } from "./notifications/scheduling";
 import { sendOrderedPhotonOutput } from "./photon-output";
 
 describe("Photon ordered output transport", () => {
@@ -20,7 +21,7 @@ describe("Photon ordered output transport", () => {
       ],
     };
     const record = vi.fn(async () => undefined);
-    await sendOrderedPhotonOutput(space as never, "+13055550123", output, "dibs_reply", record);
+    const result = await sendOrderedPhotonOutput(space as never, "+13055550123", output, "dibs_reply", record);
     expect(sent[0]).toBe("found three");
     expect(sent[1]).toBe("1/3\nfirst");
     expect(sent[4]).toBe("2/3\nsecond");
@@ -30,6 +31,7 @@ describe("Photon ordered output transport", () => {
     expect(typeof sent[5]).not.toBe("string");
     expect(typeof sent[7]).not.toBe("string");
     expect(record).toHaveBeenCalledTimes(8);
+    expect(result.textMessages.map(item => item.id)).toEqual(["sent-1", "sent-2", "sent-5", "sent-7"]);
   });
 
   it("keeps zero, one, and two-photo products separated without cross-contamination", async () => {
@@ -59,5 +61,35 @@ describe("Photon ordered output transport", () => {
       parts: [{ type: "text", text: "**what's the make and model?**" }, { type: "text", text: "what's the make and model?" }],
     }, "dibs_reply", vi.fn(async () => undefined));
     expect(sent).toEqual(["what's the make and model?"]);
+  });
+
+  it("schedules once from the last confirmed text when a later text send fails", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const space = { id: "space-1", send: vi.fn()
+      .mockResolvedValueOnce({ id: "outbound-1", timestamp: new Date("2026-08-11T12:00:01.000Z") })
+      .mockResolvedValueOnce({ id: "outbound-2", timestamp: new Date("2026-08-11T12:00:02.000Z") })
+      .mockRejectedValueOnce(new Error("text 3 failed")) };
+    const record = vi.fn(async () => undefined);
+    const schedule = vi.fn(async (_userId: string, _inboundMessageId: string, _outboundMessageId: string) => undefined);
+
+    const sent = await sendOrderedPhotonOutput(space as never, "+13055550123", {
+      text: "three parts",
+      parts: [
+        { type: "text", text: "text 1" },
+        { type: "text", text: "text 2" },
+        { type: "text", text: "text 3" },
+      ],
+    }, "dibs_reply", record);
+    const followup = followupScheduleRequest({
+      messageId: "inbound-1", conversationId: "space-1", senderId: "+13055550123",
+      occurredAt: "2026-08-11T12:00:00.000Z", text: "find a PS5", attachments: [],
+    }, { response: { text: "three parts" }, followupUserId: "user-1" }, sent.textMessages);
+    if (followup) await schedule(followup.userId, followup.inboundMessageId, followup.outboundMessageId);
+
+    expect(sent.textMessages.map(message => message.id)).toEqual(["outbound-1", "outbound-2"]);
+    expect(schedule).toHaveBeenCalledOnce();
+    expect(schedule).toHaveBeenCalledWith("user-1", "inbound-1", "outbound-2");
+    expect(warning).toHaveBeenCalledWith("Could not send Photon text", "text 3 failed");
+    warning.mockRestore();
   });
 });

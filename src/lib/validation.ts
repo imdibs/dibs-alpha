@@ -12,3 +12,4 @@ export const listingSchema = z.object({
   condition: z.enum(["new", "like_new", "good", "fair"]), city: z.string().trim().min(2).max(100),
 });
 export const messageSchema = z.object({ body: z.string().max(2000).refine(value => value.trim().length > 0) });
+export const publicTokenSchema = z.string().regex(/^[A-Za-z0-9_-]{12}$/);

@@ -22,10 +22,10 @@ export type SellerDraft = {
 };
 
 export type PendingListingAction =
-  | { type: "publish"; draftVersion?: number; listingId?: string }
-  | { type: "remove"; listingId: string; title: string }
-  | { type: "sold"; listingId: string; title: string }
-  | { type: "price"; listingId: string; title: string; priceCents: number };
+  | { type: "publish"; draftVersion?: number; listingId?: string; preparedByInboundMessageId?: string }
+  | { type: "remove"; listingId: string; title: string; preparedByInboundMessageId?: string }
+  | { type: "sold"; listingId: string; title: string; preparedByInboundMessageId?: string }
+  | { type: "price"; listingId: string; title: string; priceCents: number; preparedByInboundMessageId?: string };
 
 export function wantsToSell(text: string): boolean {
   return /\b(?:i\s*(?:wanna|want to|need to|would like to)|help me)\s+(?:sell|list)|\b(?:sell|selling|listing|list)\s+(?:something|this|my\b)|\bi'?m selling\b/i.test(text);
@@ -120,7 +120,7 @@ export function missingDraftFields(draft: SellerDraft): DraftField[] {
     if (!draft.size) missing.push("size");
     if (!draft.defects) missing.push("defects");
   }
-  if (!draft.photos.length) missing.push("photos");
+  if (draft.photos.length < 2) missing.push("photos");
   return missing;
 }
 
@@ -131,7 +131,7 @@ export function missingDraftField(draft: SellerDraft): DraftField | null {
 
 export function nextDraftQuestion(draft: SellerDraft): string {
   switch (missingDraftField(draft)) {
-    case "photos": return "yeah, send me a few pics";
+    case "photos": return draft.photos.length === 1 ? "send me one more pic and we're good." : "yeah, send me a couple pics";
     case "title": return draft.suggestedTitle
       ? `looks like ${draft.suggestedTitle}. is that what you're selling?`
       : "what exactly are you selling here?";

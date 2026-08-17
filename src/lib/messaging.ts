@@ -16,6 +16,7 @@ export type InboundMessage = {
   messageId: string;
   conversationId: string;
   senderId: string;
+  occurredAt: string;
   text: string;
   attachments: MessagingAttachment[];
 };

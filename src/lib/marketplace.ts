@@ -2,6 +2,9 @@ import { db } from "./db";
 import type { MessagingAttachment } from "./messaging";
 import { listingDescription, missingDraftField, type PendingListingAction, type SellerDraft, type SellerPhoto } from "./seller-listing";
 import type { Listing } from "./types";
+import { recordProductEvent } from "./analytics";
+import { classifyDealSignal } from "./deal-signals";
+import { normalizeE164Phone } from "./phone";
 
 export type ConversationRecord = {
   id: string;
@@ -31,7 +34,7 @@ export function normalizeIMessageIdentity(value: string): string | null {
   if (identity.includes("@")) return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identity) ? identity.toLowerCase() : null;
   const digits = identity.replace(/[^\d]/g, "");
   if (!identity.startsWith("+") || digits.length < 8 || digits.length > 15) return null;
-  return `+${digits}`;
+  return normalizeE164Phone(`+${digits}`);
 }
 
 export type IMessageUser = {
@@ -142,10 +145,18 @@ export async function createListingFromDraft(userId: string, draft: SellerDraft,
     condition: draft.condition,
     city: draft.city,
     image_urls: draft.photos.map(photo => photo.url),
-    status: "active",
+    category: draft.category,
+    status: "draft",
   }).select("id").single();
   if (created.error) throw new Error("I couldn't put that listing up yet. Your draft is still here.");
   return created.data;
+}
+
+export async function activateOwnedDraftListing(userId: string, listingId: string): Promise<void> {
+  const now = new Date().toISOString();
+  const result = await db().from("listings").update({ status: "active", published_at: now, updated_at: now })
+    .eq("id", listingId).eq("seller_id", userId).eq("status", "draft").select("id").maybeSingle();
+  if (result.error || !result.data) throw new Error("I couldn't activate that verified listing. Your draft is still saved.");
 }
 
 export async function activeListingsForSeller(userId: string): Promise<Listing[]> {
@@ -155,17 +166,20 @@ export async function activeListingsForSeller(userId: string): Promise<Listing[]
 }
 
 export async function updateOwnedListing(userId: string, listingId: string, values: { status: "sold" | "removed" } | { price_cents: number }): Promise<void> {
-  const result = await db().from("listings").update(values).eq("id", listingId).eq("seller_id", userId).eq("status", "active").select("id").maybeSingle();
+  const now = new Date().toISOString();
+  const lifecycle = "status" in values && values.status === "sold" ? { sold_at: now } : {};
+  const result = await db().from("listings").update({ ...values, ...lifecycle, updated_at: now }).eq("id", listingId).eq("seller_id", userId).eq("status", "active").select("id").maybeSingle();
   if (result.error || !result.data) throw new Error("I couldn't update that active listing.");
 }
 
-export async function claimInboundEvent(messageId: string, spaceId: string, identity: string): Promise<boolean> {
+export async function claimInboundEvent(messageId: string, spaceId: string, identity: string, occurredAt: string): Promise<boolean> {
   const result = await db().from("photon_message_events").insert({
     provider_message_id: messageId,
     photon_space_id: spaceId,
     direction: "inbound",
     event_kind: "user_message",
     normalized_identity: identity,
+    occurred_at: occurredAt,
   });
   if (!result.error) return true;
   if (result.error.code === "23505") return false;
@@ -180,13 +194,14 @@ export async function completePhotonEvent(messageId: string, error?: string): Pr
   }).eq("provider_message_id", messageId);
 }
 
-export async function recordOutboundEvent(input: { messageId: string; spaceId: string; identity: string; kind: "dibs_reply" | "dibs_relay" | "dibs_attachment" }): Promise<void> {
+export async function recordOutboundEvent(input: { messageId: string; spaceId: string; identity: string; kind: "dibs_reply" | "dibs_relay" | "dibs_attachment"; occurredAt: string }): Promise<void> {
   const result = await db().from("photon_message_events").upsert({
     provider_message_id: input.messageId,
     photon_space_id: input.spaceId,
     direction: "outbound",
     event_kind: input.kind,
     normalized_identity: input.identity,
+    occurred_at: input.occurredAt,
     status: "completed",
     completed_at: new Date().toISOString(),
   }, { onConflict: "provider_message_id", ignoreDuplicates: true });
@@ -215,7 +230,7 @@ export async function conversationsForUser(userId: string) {
   return (result.data || []) as unknown as Array<ConversationRecord & { listing: { title: string } }>;
 }
 
-export async function getOrCreateConversation(listingId: string, buyerId: string): Promise<ConversationRecord> {
+export async function getOrCreateConversation(listingId: string, buyerId: string, attribution?: { visitorId?: string | null; attributionToken?: string | null; source?: string | null; originListingToken?: string | null }): Promise<ConversationRecord> {
   const client = db();
   const listing = await client.from("listings").select("id,seller_id,status").eq("id", listingId).maybeSingle();
   if (!listing.data || listing.data.status !== "active") throw new Error("Listing is unavailable.");
@@ -228,7 +243,9 @@ export async function getOrCreateConversation(listingId: string, buyerId: string
     if (raced.data) return raced.data as ConversationRecord;
     throw new Error("Could not start conversation.");
   }
-  return created.data as ConversationRecord;
+  const conversation = created.data as ConversationRecord;
+  await recordProductEvent({ eventName: "buyer_seller_conversation_started", userId: buyerId, listingId, conversationId: conversation.id, visitorId: attribution?.visitorId, attributionToken: attribution?.attributionToken, source: attribution?.source, metadata: attribution?.originListingToken ? { originListingToken: attribution.originListingToken } : {} }).catch(error => console.warn("Could not record conversation event", error));
+  return conversation;
 }
 
 export async function authorizedConversation(id: string, userId: string): Promise<ConversationRecord | null> {
@@ -255,6 +272,21 @@ export async function persistParticipantMessage(input: {
     provider_message_id: input.providerMessageId || null,
   }).select("id").single();
   if (created.error) throw new Error("Could not save message.");
+  const signal = classifyDealSignal(input.body);
+  if (signal) {
+    const recorded = await db().from("deal_signals").insert({
+      conversation_id: input.conversation.id,
+      listing_id: input.conversation.listing_id,
+      buyer_id: input.conversation.buyer_id,
+      seller_id: input.conversation.seller_id,
+      status: signal.status,
+      source: "conversation_classification",
+      reported_by: input.senderId,
+      evidence: { statement: signal.evidence, messageId: created.data.id },
+      confidence: signal.confidence,
+    });
+    if (!recorded.error) await recordProductEvent({ eventName: "deal_signal_detected", userId: input.senderId, listingId: input.conversation.listing_id, conversationId: input.conversation.id, metadata: { status: signal.status, confidence: signal.confidence } }).catch(error => console.warn("Could not record deal event", error));
+  }
   return created.data;
 }
 

@@ -75,6 +75,13 @@ function productHeader(listing: PublicListing, number: number, total: number): s
 }
 
 function buildParts(final: z.infer<typeof finalResponseParser>, results: ToolResult[]): { text: string; parts?: OutboundPart[] } {
+  const publish = results.find(result => result.ok && result.name === "publishListing")?.data as { published?: boolean; verified?: boolean; title?: string; priceCents?: number; city?: string; shareUrl?: string } | undefined;
+  if (publish?.published && publish.verified && publish.shareUrl) {
+    const price = typeof publish.priceCents === "number" ? ` for $${(publish.priceCents / 100).toLocaleString("en-US")}` : "";
+    const city = publish.city ? ` in ${publish.city}` : "";
+    const text = `your ${publish.title || "listing"} is live${price}${city}.\n\nshare it: ${publish.shareUrl}`;
+    return sanitizeOutboundMessage({ text });
+  }
   const listingToolResult = results.find(result => result.ok && ["searchListings", "getRecentSearchResults", "getOwnedListings"].includes(result.name));
   const listingResult = listingToolResult?.data as { listings?: PublicListing[] } | undefined;
   const detailPhotos = results.flatMap(result => {

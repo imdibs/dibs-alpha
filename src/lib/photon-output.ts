@@ -4,11 +4,11 @@ import { sanitizeOutboundMessage } from "./imessage-text";
 
 export type PhotonOutputSpace = {
   id: string;
-  send(content: string | ContentBuilder): Promise<{ id?: string } | undefined>;
+  send(content: string | ContentBuilder): Promise<{ id?: string; timestamp?: Date } | undefined>;
 };
 export type PhotonOutputKind = "dibs_reply" | "dibs_relay" | "dibs_attachment";
 export type RecordPhotonOutput = (
-  sent: { id?: string } | undefined,
+  sent: { id?: string; timestamp?: Date } | undefined,
   spaceId: string,
   identity: string,
   kind: PhotonOutputKind,
@@ -20,12 +20,20 @@ export async function sendOrderedPhotonOutput(
   output: OutboundMessage,
   kind: Exclude<PhotonOutputKind, "dibs_attachment">,
   recordSent: RecordPhotonOutput,
-): Promise<void> {
+): Promise<{ textMessages: Array<{ id: string; occurredAt: string }> }> {
   const sanitized = sanitizeOutboundMessage(output);
   const parts = sanitized.parts || [{ type: "text" as const, text: sanitized.text }];
+  const textMessages: Array<{ id: string; occurredAt: string }> = [];
   for (const [index, part] of parts.entries()) {
     if (part.type === "text") {
-      await recordSent(await space.send(part.text), space.id, identity, kind);
+      try {
+        const sent = await space.send(part.text);
+        await recordSent(sent, space.id, identity, kind);
+        if (sent?.id) textMessages.push({ id: sent.id, occurredAt: (sent.timestamp || new Date()).toISOString() });
+      } catch (error) {
+        console.warn("Could not send Photon text", error instanceof Error ? error.message : "Unknown error");
+        break;
+      }
       continue;
     }
     try {
@@ -37,4 +45,5 @@ export async function sendOrderedPhotonOutput(
       console.warn("Could not send listing photo", error instanceof Error ? error.message : "Unknown error");
     }
   }
+  return { textMessages };
 }

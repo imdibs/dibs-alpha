@@ -49,12 +49,12 @@ describe("seller listing conversation", () => {
 
   it("requires category-specific electronics details before publication", () => {
     const partial: SellerDraft = { title: "PS5 controller", category: "electronics", condition: "good", priceCents: 3000, city: "Miami", photos: [{ id: "1", path: "p", url: "u" }] };
-    expect(missingDraftFields(partial)).toEqual(["age", "functionality", "defects", "includedItems", "packaging"]);
-    expect(missingDraftFields({ ...partial, age: "2 months old", functionality: "Works properly", defects: "No scratches or drift", includedItems: "Controller and cable", packaging: "No box" })).toEqual([]);
+    expect(missingDraftFields(partial)).toEqual(["age", "functionality", "defects", "includedItems", "packaging", "photos"]);
+    expect(missingDraftFields({ ...partial, age: "2 months old", functionality: "Works properly", defects: "No scratches or drift", includedItems: "Controller and cable", packaging: "No box" })).toEqual(["photos"]);
   });
 
   it("does not require electronics questions for clothing and preserves seller facts for buyers", () => {
-    const clothing: SellerDraft = { title: "Levi's 501 jeans", category: "clothing", size: "32x30", defects: "No damage", condition: "good", priceCents: 3000, city: "Miami", photos: [{ id: "1", path: "p", url: "u" }] };
+    const clothing: SellerDraft = { title: "Levi's 501 jeans", category: "clothing", size: "32x30", defects: "No damage", condition: "good", priceCents: 3000, city: "Miami", photos: [{ id: "1", path: "p", url: "u" }, { id: "2", path: "q", url: "v" }] };
     expect(missingDraftFields(clothing)).toEqual([]);
     expect(listingDescription({ ...clothing, age: "Bought last year", includedItems: "Jeans only" })).toBe("Bought last year No damage Jeans only 32x30");
   });

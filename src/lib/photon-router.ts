@@ -10,6 +10,8 @@ import {
 import { renderRelay, type InboundMessage, type OutboundMessage } from "./messaging";
 import { sanitizeOutboundMessage } from "./imessage-text";
 import type { Listing } from "./types";
+import { markAlphaOnboardingReplied } from "./onboarding";
+import { cancelNotificationFollowups } from "./notifications/store";
 
 export type PhotonRouterDependencies = {
   aiClient?: AiClient;
@@ -17,11 +19,14 @@ export type PhotonRouterDependencies = {
   toolDependencies?: Partial<ToolDependencies>;
   loadHistory?: typeof loadAiHistory;
   appendHistory?: typeof appendAiTurn;
+  markOnboardingReplied?: typeof markAlphaOnboardingReplied;
+  cancelFollowups?: typeof cancelNotificationFollowups;
 };
 export type PhotonRouterResult = {
   response?: OutboundMessage;
   relay?: { identity: string; message: OutboundMessage; conversationId: string; sourceMessageId: string };
   duplicate?: boolean;
+  followupUserId?: string;
 };
 
 async function loadListings(ids: string[]): Promise<Listing[]> {
@@ -32,11 +37,15 @@ async function loadListings(ids: string[]): Promise<Listing[]> {
 export async function routePhotonMessage(message: InboundMessage, options: PhotonRouterDependencies & { defaultCity?: string } = {}): Promise<PhotonRouterResult> {
   const identity = normalizeIMessageIdentity(message.senderId);
   if (!identity) return { response: { text: "I couldn't verify that iMessage sender." } };
-  if (!await claimInboundEvent(message.messageId, message.conversationId, identity)) return { duplicate: true };
+  if (!await claimInboundEvent(message.messageId, message.conversationId, identity, message.occurredAt)) return { duplicate: true };
   try {
     const recognized = await recognizeIMessageUser(identity);
     if (!recognized) throw new Error("I couldn't recognize this iMessage account.");
     const user = recognized.user;
+    await (options.cancelFollowups || cancelNotificationFollowups)(user.id, message.messageId)
+      .catch(error => console.warn("Could not cancel notification follow-ups", error));
+    await (options.markOnboardingReplied || markAlphaOnboardingReplied)(identity, message.conversationId)
+      .catch(error => console.warn("Could not link onboarding reply", error));
     let session = await getMessagingSession(identity);
     await saveMessagingSession(identity, { user_id: user.id, photon_space_id: message.conversationId });
 
@@ -70,7 +79,7 @@ export async function routePhotonMessage(message: InboundMessage, options: Photo
     const recentListings = await loadListings((session?.recent_listing_ids || []).slice(0, 2));
     const selectedListing = session?.selected_listing_id ? await listingForMessaging(session.selected_listing_id) as Listing | null : null;
     const context: AgentContext = { session, history, sellerDraft: session?.seller_draft || null, recentListings, selectedListing };
-    const trusted = { userId: user.id, normalizedIdentity: identity, inboundMessageId: message.messageId, photonSpaceId: message.conversationId, defaultCity: options.defaultCity || user.city || "Miami, FL" };
+    const trusted = { userId: user.id, normalizedIdentity: identity, inboundMessageId: message.messageId, photonSpaceId: message.conversationId, defaultCity: options.defaultCity || user.city || "Miami, FL", currentMessageText: message.text };
     const executeTool = options.executeTool || createToolExecutor(trusted, options.toolDependencies);
     const result = await runDibsAgent({ text: message.text, context, trusted }, { client: options.aiClient, executeTool });
     await historyAppender(user.id, { role: "tool", body: JSON.stringify(result.toolResults) });
@@ -82,7 +91,7 @@ export async function routePhotonMessage(message: InboundMessage, options: Photo
     const response = sanitizeOutboundMessage({ text, parts });
     await historyAppender(user.id, { role: "assistant", body: response.text });
     await completePhotonEvent(message.messageId);
-    return { response };
+    return { response, followupUserId: message.text.trim() ? user.id : undefined };
   } catch (error) {
     const reason = error instanceof Error ? error.message : "Unknown error";
     await completePhotonEvent(message.messageId, reason);

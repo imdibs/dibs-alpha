@@ -9,9 +9,11 @@ describe("Photon messaging adapter", () => {
   it("parses inbound text and identifies its sender and conversation", () => {
     expect(parsePhotonInbound(space, {
       id: "message-1", direction: "inbound", sender: { id: "+13055550123" },
+      timestamp: new Date("2026-08-11T12:00:00.000Z"),
       content: { type: "text", text: " Find me a PS5 under $300 near me. " },
     })).toEqual({
       messageId: "message-1", conversationId: "chat-123", senderId: "+13055550123",
+      occurredAt: "2026-08-11T12:00:00.000Z",
       text: " Find me a PS5 under $300 near me. ", attachments: [],
     });
   });
@@ -66,7 +68,7 @@ describe("Photon messaging adapter", () => {
 
   it("routes message text through Dibs search with the Alpha city", async () => {
     const search = vi.fn(async () => ({ intent: { query: "PS5", maxPriceCents: 30000, city: "Miami, FL" }, listings: [] }));
-    await routeInboundMessage({ messageId: "1", conversationId: "c", senderId: "+1", text: "PS5 under $300 near me", attachments: [] }, { search });
+    await routeInboundMessage({ messageId: "1", conversationId: "c", senderId: "+1", occurredAt: "2026-08-11T12:00:00.000Z", text: "PS5 under $300 near me", attachments: [] }, { search });
     expect(search).toHaveBeenCalledWith("PS5 under $300 near me", "Miami, FL");
   });
 

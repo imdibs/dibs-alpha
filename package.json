@@ -13,6 +13,7 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.55.0",
     "next": "^15.4.6",
+    "posthog-node": "5.10.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "spectrum-ts": "12.7.0",

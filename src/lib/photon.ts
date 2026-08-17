@@ -4,6 +4,7 @@ export type PhotonMessageLike = {
   id?: string;
   direction?: string;
   sender?: { id?: string };
+  timestamp?: Date;
   content?: unknown;
 };
 export type PhotonSpaceLike = { id?: string; send(text: string): Promise<unknown> };
@@ -38,6 +39,7 @@ export function parsePhotonInbound(space: PhotonSpaceLike, message: PhotonMessag
     messageId: message.id,
     conversationId: space.id || "unknown",
     senderId: message.sender?.id || "",
+    occurredAt: (message.timestamp || new Date()).toISOString(),
     text,
     attachments,
   };

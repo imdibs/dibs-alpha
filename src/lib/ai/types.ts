@@ -18,6 +18,7 @@ export type TrustedToolContext = {
   inboundMessageId: string;
   photonSpaceId: string;
   defaultCity: string;
+  currentMessageText?: string;
 };
 
 export const TOOL_NAMES = [

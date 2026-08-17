@@ -5,6 +5,11 @@ import { recordOutboundEvent } from "../lib/marketplace";
 import { parsePhotonInbound, sendPhotonReply } from "../lib/photon";
 import { sendOrderedPhotonOutput, type PhotonOutputSpace } from "../lib/photon-output";
 import { routePhotonMessage } from "../lib/photon-router";
+import { processNextAlphaOnboarding } from "../lib/onboarding";
+import { processNextNotificationOpportunity } from "../lib/notifications/processor";
+import { scheduleUnansweredFollowup } from "../lib/notifications/store";
+import { withNotificationDeliveryGate } from "../lib/notifications/delivery-gate";
+import { followupScheduleRequest } from "../lib/notifications/scheduling";
 
 function required(name: "PHOTON_PROJECT_ID" | "PHOTON_PROJECT_SECRET"): string {
   const value = process.env[name]?.trim();
@@ -22,9 +27,11 @@ async function main() {
 
   console.log("Dibs Photon worker connected and waiting for iMessages.");
   const iMessage = imessage(app);
+  let onboardingBusy = false;
+  let notificationBusy = false;
 
-  async function recordSent(sent: { id?: string } | undefined, spaceId: string, identity: string, kind: "dibs_reply" | "dibs_relay" | "dibs_attachment") {
-    if (sent?.id) await recordOutboundEvent({ messageId: sent.id, spaceId, identity, kind });
+  async function recordSent(sent: { id?: string; timestamp?: Date } | undefined, spaceId: string, identity: string, kind: "dibs_reply" | "dibs_relay" | "dibs_attachment") {
+    if (sent?.id) await recordOutboundEvent({ messageId: sent.id, spaceId, identity, kind, occurredAt: (sent.timestamp || new Date()).toISOString() });
   }
 
   async function sendOutput(
@@ -33,11 +40,50 @@ async function main() {
     output: OutboundMessage,
     kind: "dibs_reply" | "dibs_relay",
   ) {
-    await sendOrderedPhotonOutput(space, identity, output, kind, recordSent);
+    return sendOrderedPhotonOutput(space, identity, output, kind, recordSent);
   }
+
+  async function processOnboarding() {
+    if (onboardingBusy) return;
+    onboardingBusy = true;
+    try {
+      await processNextAlphaOnboarding({
+        createSpace: identity => process.env.PHOTON_IMESSAGE_LINE
+          ? iMessage.space.create(identity, { phone: process.env.PHOTON_IMESSAGE_LINE })
+          : iMessage.space.create(identity),
+        recordSent: async (messageId, spaceId, identity) => recordOutboundEvent({ messageId, spaceId, identity, kind: "dibs_reply", occurredAt: new Date().toISOString() }),
+      });
+    } catch (error) {
+      console.error("Could not process Alpha onboarding", error instanceof Error ? error.message : "Unknown error");
+    } finally {
+      onboardingBusy = false;
+    }
+  }
+
+  const onboardingTimer = setInterval(() => void processOnboarding(), 5_000);
+  onboardingTimer.unref();
+  void processOnboarding();
+
+  async function processNotifications() {
+    if (notificationBusy) return;
+    notificationBusy = true;
+    try {
+      await processNextNotificationOpportunity({ createSpace: spaceId => iMessage.space.get(spaceId) });
+    } catch (error) {
+      console.error("Could not process notification opportunity", error instanceof Error ? error.message : "Unknown error");
+    } finally {
+      notificationBusy = false;
+    }
+  }
+
+  const notificationTimer = setInterval(() => void processNotifications(), 5_000);
+  notificationTimer.unref();
+  void processNotifications();
 
   async function stop(signal: string) {
     console.log(`Stopping Dibs Photon worker (${signal}).`);
+    clearInterval(onboardingTimer);
+    clearInterval(notificationTimer);
     await app.stop();
     process.exit(0);
   }
@@ -52,7 +98,7 @@ async function main() {
       conversationId: inbound.conversationId,
     });
     try {
-      await space.responding(async () => {
+      await withNotificationDeliveryGate(inbound.conversationId, () => space.responding(async () => {
         const result = await routePhotonMessage(inbound, {
           defaultCity: process.env.PHOTON_DEFAULT_CITY || "Miami, FL",
         });
@@ -60,14 +106,21 @@ async function main() {
           console.log("Ignored duplicate Photon message", { messageId: inbound.messageId });
           return;
         }
-        if (result.response) await sendOutput(space, inbound.senderId, result.response, "dibs_reply");
+        if (result.response) {
+          const sent = await sendOutput(space, inbound.senderId, result.response, "dibs_reply");
+          const followup = followupScheduleRequest(inbound, result, sent.textMessages);
+          if (followup) {
+            await scheduleUnansweredFollowup(followup.userId, followup.inboundMessageId, followup.outboundMessageId)
+              .catch(error => console.warn("Could not schedule unanswered follow-up", error));
+          }
+        }
         if (result.relay) {
           const relaySpace = process.env.PHOTON_IMESSAGE_LINE
             ? await iMessage.space.create(result.relay.identity, { phone: process.env.PHOTON_IMESSAGE_LINE })
             : await iMessage.space.create(result.relay.identity);
           await sendOutput(relaySpace, result.relay.identity, result.relay.message, "dibs_relay");
         }
-      });
+      }));
     } catch (error) {
       console.error("Could not process Photon message", error instanceof Error ? error.message : "Unknown error");
       await sendPhotonReply(space, "Sorry, I couldn't process that message right now. Please try again shortly.");

@@ -84,6 +84,13 @@ describe("offline Dibs transcript planning contracts", () => {
     expect(result.text).toBe("it's live");
   });
 
+  it("renders only the authoritative share URL after verified publication", async () => {
+    const execute = vi.fn(async (): Promise<ToolResult> => ({ name: "publishListing", ok: true, data: { published: true, verified: true, title: "PS5 Slim", priceCents: 28000, city: "Wynwood", shareUrl: "https://dibs.chat/l/7xK92pAb_Cde" } }));
+    const result = await runDibsAgent({ text: "post it", trusted, context: { session: session({ pending_listing_action: { type: "publish", draftVersion: 3 }, seller_draft_version: 3 }), history: [], sellerDraft: null, recentListings: [], selectedListing: null } }, { client: fakeClient({ tools: [{ name: "publishListing", arguments: { expectedDraftVersion: 3 } }] }, { text: "made up https://evil.test", listings: [], closing: "" }), executeTool: execute });
+    expect(result.text).toBe("your PS5 Slim is live for $280 in Wynwood.\n\nshare it: https://dibs.chat/l/7xK92pAb_Cde");
+    expect(result.text).not.toContain("evil.test");
+  });
+
   it.each([
     ["nothing", "fair. you looking to buy something or sell something?"],
     ["so what can you do?", "you can buy stuff, sell stuff, or tell me what you're hunting for and i'll find it. what are you looking for?"],

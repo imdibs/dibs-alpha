@@ -1,13 +1,16 @@
 import { z } from "zod";
 import { searchListingsByIntent, type ListingSearchResult } from "../listing-search";
 import {
-  activeListingsForSeller, createListingFromDraft, deleteSellerDraftPhotos, getMessagingSession,
+  activateOwnedDraftListing, activeListingsForSeller, createListingFromDraft, deleteSellerDraftPhotos, getMessagingSession,
   listingForMessaging, saveMessagingSession, updateOwnedListing,
 } from "../marketplace";
 import { listingDescription, missingDraftField, missingDraftFields, reviewDraft, type SellerDraft } from "../seller-listing";
 import { randomUUID } from "node:crypto";
 import type { Listing } from "../types";
 import { displayListingTitle } from "../messaging";
+import { isConfirmation } from "../seller-listing";
+import { publicListingUrl } from "../public-listings";
+import { recordProductEvent } from "../analytics";
 import type { ToolName, ToolRequest, ToolResult, TrustedToolContext } from "./types";
 
 const condition = z.enum(["new", "like_new", "good", "fair"]);
@@ -31,22 +34,24 @@ export type ToolDependencies = {
   getListing: typeof listingForMessaging;
   getOwned: typeof activeListingsForSeller;
   createListing: typeof createListingFromDraft;
+  activateListing: typeof activateOwnedDraftListing;
   updateListing: typeof updateOwnedListing;
   deleteDraftPhotos: typeof deleteSellerDraftPhotos;
+  recordEvent?: typeof recordProductEvent;
 };
 const defaults: ToolDependencies = {
   search: searchListingsByIntent, getSession: getMessagingSession, saveSession: saveMessagingSession,
-  getListing: listingForMessaging, getOwned: activeListingsForSeller, createListing: createListingFromDraft,
-  updateListing: updateOwnedListing, deleteDraftPhotos: deleteSellerDraftPhotos,
+  getListing: listingForMessaging, getOwned: activeListingsForSeller, createListing: createListingFromDraft, activateListing: activateOwnedDraftListing,
+  updateListing: updateOwnedListing, deleteDraftPhotos: deleteSellerDraftPhotos, recordEvent: recordProductEvent,
 };
 
 function publicListing(listing: Listing) {
   return { title: displayListingTitle(listing.title), description: listing.description.replace(/\[ALPHA TEST\]/gi, "").trim().slice(0, 2000), priceCents: listing.price_cents, city: listing.city, condition: listing.condition, photoUrls: listing.image_urls, photoCount: listing.image_urls.length, status: listing.status };
 }
 
-function listingMatchesDraft(listing: Listing, userId: string, draft: SellerDraft): boolean {
+function listingMatchesDraft(listing: Listing, userId: string, draft: SellerDraft, status: "draft" | "active"): boolean {
   const expectedDescription = listingDescription(draft);
-  return listing.seller_id === userId && listing.status === "active" && listing.title === draft.title
+  return listing.seller_id === userId && listing.status === status && listing.title === draft.title
     && listing.price_cents === draft.priceCents && listing.condition === draft.condition && listing.city === draft.city
     && listing.description === expectedDescription
     && listing.image_urls.length === draft.photos.length
@@ -122,7 +127,7 @@ export function createToolExecutor(context: TrustedToolContext, overrides: Parti
           const version = (session?.seller_draft_version || 0) + 1;
           const missingFields = missingDraftFields(draft);
           const complete = missingFields.length === 0;
-          await deps.saveSession(context.normalizedIdentity, { seller_draft: draft, seller_draft_version: version, pending_listing_action: complete ? { type: "publish", draftVersion: version } : null, context_kind: "seller", active_conversation_id: null });
+          await deps.saveSession(context.normalizedIdentity, { seller_draft: draft, seller_draft_version: version, pending_listing_action: null, context_kind: "seller", active_conversation_id: null });
           data = { draft, version, missingField: missingFields[0] || null, missingFields, readyToReview: complete };
           break;
         }
@@ -137,13 +142,14 @@ export function createToolExecutor(context: TrustedToolContext, overrides: Parti
           const version = session?.seller_draft_version || 0;
           const listingId = session?.pending_listing_action?.type === "publish" && session.pending_listing_action.draftVersion === version
             ? session.pending_listing_action.listingId || randomUUID() : randomUUID();
-          await deps.saveSession(context.normalizedIdentity, { pending_listing_action: { type: "publish", draftVersion: version, listingId }, context_kind: "seller" });
+          await deps.saveSession(context.normalizedIdentity, { pending_listing_action: { type: "publish", draftVersion: version, listingId, preparedByInboundMessageId: context.inboundMessageId }, context_kind: "seller" });
           data = { review: reviewDraft(draft), version, confirmationRequired: true }; break;
         }
         case "publishListing": {
           const args = z.object({ expectedDraftVersion: z.number().int().nonnegative() }).strict().parse(request.arguments);
           const session = await deps.getSession(context.normalizedIdentity); const pending = session?.pending_listing_action;
           if (!session?.seller_draft || pending?.type !== "publish" || pending.draftVersion !== args.expectedDraftVersion || session.seller_draft_version !== args.expectedDraftVersion) throw new Error("There isn't a matching confirmed publish action.");
+          if (!pending.preparedByInboundMessageId || pending.preparedByInboundMessageId === context.inboundMessageId || !isConfirmation(context.currentMessageText || "")) throw new Error("Publishing needs a separate explicit confirmation.");
           if (missingDraftField(session.seller_draft)) throw new Error("That listing still needs important details.");
           const listingId = pending.listingId || randomUUID();
           if (!pending.listingId) await deps.saveSession(context.normalizedIdentity, { pending_listing_action: { ...pending, listingId } });
@@ -152,9 +158,19 @@ export function createToolExecutor(context: TrustedToolContext, overrides: Parti
             await deps.createListing(context.userId, session.seller_draft, listingId);
             verified = await deps.getListing(listingId) as unknown as Listing | null;
           }
-          if (!verified || !listingMatchesDraft(verified, context.userId, session.seller_draft)) throw new Error("The publish could not be verified. Your draft is still saved; try again safely.");
+          if (!verified) throw new Error("The publish could not be verified. Your draft is still saved; try again safely.");
+          if (verified.status === "draft") {
+            if (!listingMatchesDraft(verified, context.userId, session.seller_draft, "draft")) throw new Error("The publish could not be verified. Your draft is still saved; try again safely.");
+            await deps.activateListing(context.userId, listingId);
+            verified = await deps.getListing(listingId) as unknown as Listing | null;
+          }
+          if (!verified || !listingMatchesDraft(verified, context.userId, session.seller_draft, "active")) throw new Error("The publish could not be verified. Your draft is still saved; try again safely.");
+          if (!verified.public_token) throw new Error("The publish could not be verified. Your draft is still saved; try again safely.");
+          const shareUrl = publicListingUrl(verified.public_token);
           await deps.saveSession(context.normalizedIdentity, { seller_draft: null, pending_listing_action: null, selected_listing_id: listingId, context_kind: "search" });
-          data = { published: true, verified: true }; break;
+          await deps.recordEvent?.({ eventName: "listing_published", userId: context.userId, listingId, metadata: { verified: true } }).catch(error => console.warn("Could not record publish event", error));
+          await deps.recordEvent?.({ eventName: "listing_share_link_generated", userId: context.userId, listingId, metadata: { channel: "imessage_publish" } }).catch(error => console.warn("Could not record share event", error));
+          data = { published: true, verified: true, title: displayListingTitle(verified.title), priceCents: verified.price_cents, city: verified.city, shareUrl }; break;
         }
         case "updateOwnedListingPrice": case "markOwnedListingSold": case "removeOwnedListing": {
           const args = z.object({ listingNumber: z.number().int().min(1).max(20), priceCents: z.number().int().positive().max(100_000_000).optional(), confirm: z.boolean().optional() }).strict().parse(request.arguments);
@@ -163,12 +179,13 @@ export function createToolExecutor(context: TrustedToolContext, overrides: Parti
           const type = request.name === "updateOwnedListingPrice" ? "price" : request.name === "markOwnedListingSold" ? "sold" : "remove";
           if (type === "price" && !args.priceCents) throw new Error("A valid price is required.");
           const pendingAction = session?.pending_listing_action;
-          const matches = pendingAction?.type === type && pendingAction.listingId === listing.id && (pendingAction.type !== "price" || pendingAction.priceCents === args.priceCents);
+          const matches = pendingAction?.type === type && pendingAction.listingId === listing.id && pendingAction.preparedByInboundMessageId !== context.inboundMessageId && (pendingAction.type !== "price" || pendingAction.priceCents === args.priceCents);
           if (!args.confirm || !matches) {
-            const pending = type === "price" ? { type, listingId: listing.id, title: listing.title, priceCents: args.priceCents! } as const : { type, listingId: listing.id, title: listing.title } as const;
+            const pending = type === "price" ? { type, listingId: listing.id, title: listing.title, priceCents: args.priceCents!, preparedByInboundMessageId: context.inboundMessageId } as const : { type, listingId: listing.id, title: listing.title, preparedByInboundMessageId: context.inboundMessageId } as const;
             await deps.saveSession(context.normalizedIdentity, { pending_listing_action: pending, recent_owned_listing_ids: owned.map(item => item.id), context_kind: "listings" });
             data = { confirmationRequired: true, action: type, title: listing.title, priceCents: args.priceCents }; break;
           }
+          if (!isConfirmation(context.currentMessageText || "")) throw new Error("That change needs a separate explicit confirmation.");
           await deps.updateListing(context.userId, listing.id, type === "price" ? { price_cents: args.priceCents! } : { status: type === "sold" ? "sold" : "removed" });
           await deps.saveSession(context.normalizedIdentity, { pending_listing_action: null }); data = { updated: true, action: type }; break;
         }
