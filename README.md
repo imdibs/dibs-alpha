@@ -5,7 +5,7 @@ The smallest useful Dibs loop: create a listing, ask for an item in natural lang
 ## Local setup
 
 1. Create a free Supabase project.
-2. Run `supabase/migrations/001_alpha.sql` in its SQL editor.
+2. Run migrations `001_alpha.sql` through `010_web_listing_uploads_and_rate_limits.sql` in order in its SQL editor.
 3. Copy `.env.example` to `.env.local` and add the project URL, service-role key, and a random 32+ character session secret.
 4. Run `npm install && npm run dev`.
 
@@ -36,17 +36,32 @@ The legacy web marketplace still requires email and password authentication; a p
 
 ## Public website onboarding
 
-The standalone website submits phone onboarding directly to `/api/onboarding`. Local requests are allowed from `http://127.0.0.1:3001` and `http://localhost:3001` (the existing port `4200` development origins remain allowed). For production, set `DIBS_WEB_ORIGINS` to the exact deployed website origin. The repository does not establish that production origin, so replace the placeholder rather than deploying it literally:
+The standalone public website is maintained in the separate `dibs.web` repository and deployed independently. Do not import its source or deployment configuration into this application. It submits phone onboarding directly to this application's `/api/onboarding` endpoint. Local requests are allowed from `http://127.0.0.1:3001` and `http://localhost:3001` (the existing port `4200` development origins remain allowed).
 
-```env
-DIBS_WEB_ORIGINS=https://<actual-production-dibs-web-origin>
-```
-
-Multiple trusted origins may be comma-separated. Origins are matched exactly; do not use `*`. The deployed website should use `NEXT_PUBLIC_DIBS_API_URL=https://dibs.chat` for its public backend URL.
+`DIBS_WEB_ORIGINS` accepts comma-separated trusted origins and matches them exactly; never use `*`. Keep it unset in isolated staging. In production, set it only to the independently deployed public website origin, `https://www.dibs.chat`. That website uses the separately deployed application origin, `https://app.dibs.chat`, as its public API URL.
 
 ## Deploy
 
-Import this repository into Vercel, add the same environment variables, and deploy. Run the SQL migration before inviting users. Supabase serves listing images from the public `listing-images` bucket.
+Apply migrations `001` through `010` before inviting users. Supabase serves listing images from the public `listing-images` bucket; web sellers upload directly with short-lived server-authorized URLs and publish through a small metadata request. Never put secrets in this README or commit environment-specific credentials.
+
+### Isolated staging
+
+- Use the dedicated `dibs-chat-staging` Supabase project, never the production Supabase project.
+- Use a dedicated staging Vercel project, separate from the production Vercel project.
+- Set `NEXT_PUBLIC_SITE_URL` to that staging deployment's own application origin. The application intentionally fails when this value is missing or is not an HTTP(S) origin.
+- Keep `DIBS_WEB_ORIGINS` unset so isolated staging does not accept requests from the production public website.
+- Configure all other credentials only in the staging environment; do not copy production secrets.
+
+### Production
+
+Production keeps the application and public website as separate deployments:
+
+```env
+NEXT_PUBLIC_SITE_URL=https://app.dibs.chat
+DIBS_WEB_ORIGINS=https://www.dibs.chat
+```
+
+Deploy this repository only as the production application. Deploy `dibs.web` from its own repository as the standalone public website; do not import that repository into this Vercel project or this application.
 
 ## Alpha operating notes
 

@@ -5,7 +5,18 @@ import { publicTokenSchema } from "./validation";
 export type PublicListing = Pick<Listing, "id" | "seller_id" | "title" | "description" | "price_cents" | "condition" | "city" | "image_urls" | "status" | "public_token" | "category" | "published_at" | "updated_at" | "sold_at">;
 
 export function siteUrl(): string {
-  return (process.env.NEXT_PUBLIC_SITE_URL || "https://dibs.chat").replace(/\/$/, "");
+  const configured = process.env.NEXT_PUBLIC_SITE_URL?.trim();
+  if (!configured) throw new Error("NEXT_PUBLIC_SITE_URL must be configured as an HTTP(S) origin");
+  let url: URL;
+  try {
+    url = new URL(configured);
+  } catch {
+    throw new Error("NEXT_PUBLIC_SITE_URL must be configured as an HTTP(S) origin");
+  }
+  if (!(["http:", "https:"] as string[]).includes(url.protocol) || url.pathname !== "/" || url.search || url.hash || url.username || url.password) {
+    throw new Error("NEXT_PUBLIC_SITE_URL must be an HTTP(S) origin");
+  }
+  return url.origin;
 }
 
 export function publicListingUrl(token: string): string {
