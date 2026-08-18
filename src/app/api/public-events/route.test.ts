@@ -1,22 +1,22 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { recordProductEvent, getPublicListing } = vi.hoisted(() => ({ recordProductEvent: vi.fn(), getPublicListing: vi.fn() }));
+const { recordProductEvent, getPublicListing, rateLimited } = vi.hoisted(() => ({ recordProductEvent: vi.fn(), getPublicListing: vi.fn(), rateLimited: vi.fn() }));
 vi.mock("@/lib/analytics", async () => ({ PUBLIC_EVENT_NAMES: ["listing_share_link_generated", "listing_page_viewed", "listing_cta_clicked"], recordProductEvent }));
 vi.mock("@/lib/public-listings", () => ({ getPublicListing }));
 vi.mock("@/lib/auth", () => ({ currentUser: vi.fn().mockResolvedValue({ id: "user-1" }) }));
+vi.mock("@/lib/public-event-rate-limit", () => ({ publicEventRateLimited: rateLimited }));
 
 import { POST } from "./route";
-import { resetPublicEventRateLimitForTests } from "@/lib/public-event-rate-limit";
 
 const token = "7xK92pAb_Cde";
 const visitor = "550e8400-e29b-41d4-a716-446655440000";
 const attribution = "550e8400-e29b-41d4-a716-446655440001";
 function request(body: unknown, cookie = "") {
-  return new Request("https://dibs.chat/api/public-events", { method: "POST", headers: { "content-type": "application/json", cookie }, body: JSON.stringify(body) });
+  return new Request("https://app.dibs.chat/api/public-events", { method: "POST", headers: { "content-type": "application/json", cookie }, body: JSON.stringify(body) });
 }
 
 describe("POST /api/public-events", () => {
-  beforeEach(() => { vi.clearAllMocks(); resetPublicEventRateLimitForTests(); getPublicListing.mockResolvedValue({ id: "listing-1", public_token: token }); });
+  beforeEach(() => { vi.clearAllMocks(); rateLimited.mockResolvedValue(false); getPublicListing.mockResolvedValue({ id: "listing-1", public_token: token }); });
 
   it("persists valid events and preserves validated tracking/acquisition cookies", async () => {
     const response = await POST(request({ eventName: "listing_cta_clicked", listingToken: token, source: "marketplace" }, `dibs_visitor=${visitor}; dibs_attribution=${attribution}; dibs_origin_listing=${token}; dibs_acquisition_source=whatsapp`));

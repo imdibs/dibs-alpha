@@ -15,7 +15,9 @@ const schema = z.object({
 }).strict();
 
 export async function POST(request: Request) {
-  if (publicEventRateLimited(request)) return NextResponse.json({ error: "Too many events." }, { status: 429 });
+  try {
+    if (await publicEventRateLimited(request)) return NextResponse.json({ error: "Too many events." }, { status: 429 });
+  } catch { return NextResponse.json({ error: "Could not record event." }, { status: 503 }); }
   const contentLength = Number(request.headers.get("content-length") || 0);
   if (contentLength > 4096) return NextResponse.json({ error: "Invalid event." }, { status: 413 });
   let body: unknown;

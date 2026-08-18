@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ submit: vi.fn(), listing: vi.fn() }));
+const mocks = vi.hoisted(() => ({ submit: vi.fn(), listing: vi.fn(), rateLimited: vi.fn() }));
 vi.mock("@/lib/onboarding", () => ({ submitAlphaOnboarding: mocks.submit }));
 vi.mock("@/lib/public-listings", () => ({ getPublicListing: mocks.listing }));
-import { resetOnboardingRateLimitForTests } from "@/lib/onboarding-rate-limit";
+vi.mock("@/lib/onboarding-rate-limit", () => ({ onboardingRateLimited: mocks.rateLimited }));
 import { OPTIONS, POST } from "./route";
 
 const visitorId = "550e8400-e29b-41d4-a716-446655440000";
@@ -12,12 +12,12 @@ const token = "7xK92pAb_Cde";
 function request(body: unknown, ip = "203.0.113.1", origin?: string) {
   const headers: Record<string, string> = { "content-type": "application/json", "x-forwarded-for": ip };
   if (origin) headers.origin = origin;
-  return new Request("https://dibs.chat/api/onboarding", { method: "POST", headers, body: JSON.stringify(body) });
+  return new Request("https://app.dibs.chat/api/onboarding", { method: "POST", headers, body: JSON.stringify(body) });
 }
 
 describe("CORS /api/onboarding", () => {
   beforeEach(() => {
-    vi.clearAllMocks(); vi.unstubAllEnvs(); resetOnboardingRateLimitForTests();
+    vi.clearAllMocks(); vi.unstubAllEnvs(); mocks.rateLimited.mockResolvedValue(false);
     mocks.submit.mockResolvedValue({ state: "pending" });
   });
 
@@ -27,7 +27,7 @@ describe("CORS /api/onboarding", () => {
     "http://127.0.0.1:3001",
     "http://localhost:3001",
   ])("accepts preflight from %s", origin => {
-    const response = OPTIONS(new Request("https://dibs.chat/api/onboarding", { method: "OPTIONS", headers: { origin } }));
+    const response = OPTIONS(new Request("https://app.dibs.chat/api/onboarding", { method: "OPTIONS", headers: { origin } }));
     expect(response.status).toBe(204);
     expect(response.headers.get("access-control-allow-origin")).toBe(origin);
     expect(response.headers.get("access-control-allow-methods")).toBe("POST, OPTIONS");
@@ -52,14 +52,14 @@ describe("CORS /api/onboarding", () => {
   it("allows an origin configured through DIBS_WEB_ORIGINS", async () => {
     const origin = "https://web.example";
     vi.stubEnv("DIBS_WEB_ORIGINS", origin);
-    const preflight = OPTIONS(new Request("https://dibs.chat/api/onboarding", { method: "OPTIONS", headers: { origin } }));
+    const preflight = OPTIONS(new Request("https://app.dibs.chat/api/onboarding", { method: "OPTIONS", headers: { origin } }));
     expect(preflight.headers.get("access-control-allow-origin")).toBe(origin);
   });
 
   it("allows multiple comma-separated configured origins", async () => {
     vi.stubEnv("DIBS_WEB_ORIGINS", "https://web-one.example,https://web-two.example");
     for (const origin of ["https://web-one.example", "https://web-two.example"]) {
-      const preflight = OPTIONS(new Request("https://dibs.chat/api/onboarding", { method: "OPTIONS", headers: { origin } }));
+      const preflight = OPTIONS(new Request("https://app.dibs.chat/api/onboarding", { method: "OPTIONS", headers: { origin } }));
       const response = await POST(request({ phone: "305-555-0123", source: "website" }, origin, origin));
       expect(preflight.headers.get("access-control-allow-origin")).toBe(origin);
       expect(response.headers.get("access-control-allow-origin")).toBe(origin);
@@ -69,14 +69,14 @@ describe("CORS /api/onboarding", () => {
   it("trims whitespace around configured origins", () => {
     const origin = "https://web.example";
     vi.stubEnv("DIBS_WEB_ORIGINS", `  ${origin}  `);
-    const preflight = OPTIONS(new Request("https://dibs.chat/api/onboarding", { method: "OPTIONS", headers: { origin } }));
+    const preflight = OPTIONS(new Request("https://app.dibs.chat/api/onboarding", { method: "OPTIONS", headers: { origin } }));
     expect(preflight.headers.get("access-control-allow-origin")).toBe(origin);
   });
 
   it("does not allow an unapproved origin", async () => {
     vi.stubEnv("DIBS_WEB_ORIGINS", "https://approved.example,*");
     const origin = "https://unapproved.example";
-    const preflight = OPTIONS(new Request("https://dibs.chat/api/onboarding", { method: "OPTIONS", headers: { origin } }));
+    const preflight = OPTIONS(new Request("https://app.dibs.chat/api/onboarding", { method: "OPTIONS", headers: { origin } }));
     const response = await POST(request({ phone: "305-555-0123", source: "website" }, "203.0.113.11", origin));
     expect(preflight.status).toBe(204);
     expect(preflight.headers.has("access-control-allow-origin")).toBe(false);
@@ -88,7 +88,7 @@ describe("CORS /api/onboarding", () => {
 
 describe("POST /api/onboarding", () => {
   beforeEach(() => {
-    vi.clearAllMocks(); resetOnboardingRateLimitForTests();
+    vi.clearAllMocks(); mocks.rateLimited.mockResolvedValue(false);
     mocks.listing.mockResolvedValue({ id: "listing-1" });
     mocks.submit.mockResolvedValue({ state: "pending" });
   });
@@ -162,9 +162,10 @@ describe("POST /api/onboarding", () => {
     const oversized = request({ phone: "3055551234", source: "direct" });
     oversized.headers.set("content-length", "2049");
     expect((await POST(oversized)).status).toBe(413);
-    const undeclared = new Request("https://dibs.chat/api/onboarding", { method: "POST", headers: { "content-type": "application/json", "x-forwarded-for": "198.51.100.3" }, body: JSON.stringify({ phone: "3055551234", source: "direct", padding: "x".repeat(2100) }) });
+    const undeclared = new Request("https://app.dibs.chat/api/onboarding", { method: "POST", headers: { "content-type": "application/json", "x-forwarded-for": "198.51.100.3" }, body: JSON.stringify({ phone: "3055551234", source: "direct", padding: "x".repeat(2100) }) });
     expect((await POST(undeclared)).status).toBe(413);
     for (let index = 0; index < 5; index += 1) expect((await POST(request({ phone: "3055551234", source: "direct" }, "198.51.100.4"))).status).toBe(202);
+    mocks.rateLimited.mockResolvedValueOnce(true);
     expect((await POST(request({ phone: "3055551234", source: "direct" }, "198.51.100.4"))).status).toBe(429);
   });
 });

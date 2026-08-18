@@ -45,7 +45,9 @@ export function OPTIONS(request: Request) {
 }
 
 async function handlePost(request: Request) {
-  if (onboardingRateLimited(request)) return NextResponse.json({ error: "Too many requests. Try again later." }, { status: 429 });
+  try {
+    if (await onboardingRateLimited(request)) return NextResponse.json({ error: "Too many requests. Try again later." }, { status: 429 });
+  } catch { return NextResponse.json({ error: "Could not accept onboarding right now." }, { status: 503 }); }
   const contentLength = Number(request.headers.get("content-length") || 0);
   if (!Number.isFinite(contentLength) || contentLength > 2048) return NextResponse.json({ error: "Invalid onboarding request." }, { status: 413 });
   let body: unknown;

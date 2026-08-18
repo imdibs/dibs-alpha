@@ -1,33 +1,31 @@
 import { NextResponse } from "next/server";
 import { currentUser } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { listingSchema } from "@/lib/validation";
+import { listingPublicationSchema, supabaseStorageOrigin } from "@/lib/listing-uploads";
 import { capturePostHog } from "@/lib/posthog";
+
+type CreatedListing = { id: string; public_token: string };
+function firstRow<T>(value: T | T[] | null): T | null { return Array.isArray(value) ? value[0] || null : value; }
 
 export async function POST(request: Request) {
   const user = await currentUser();
   if (!user) return NextResponse.json({ error: "Sign in first." }, { status: 401 });
-  const form = await request.formData();
-  const parsed = listingSchema.safeParse(Object.fromEntries(form.entries()));
-  const photos = form.getAll("photos").filter((value): value is File => value instanceof File && value.size > 0);
-  if (!parsed.success || photos.length < 2 || photos.length > 6) return NextResponse.json({ error: "Complete every field and add 2 to 6 photos." }, { status: 400 });
-  if (photos.some(photo => photo.size > 8_000_000 || !photo.type.startsWith("image/"))) return NextResponse.json({ error: "Each photo must be an image under 8 MB." }, { status: 400 });
-  const client = db();
-  const imageUrls: string[] = [];
-  for (const photo of photos) {
-    const safeName = photo.name.replace(/[^a-zA-Z0-9._-]/g, "-");
-    const path = `${user.id}/${crypto.randomUUID()}-${safeName}`;
-    const uploaded = await client.storage.from("listing-images").upload(path, photo, { contentType: photo.type });
-    if (uploaded.error) return NextResponse.json({ error: "Photo upload failed." }, { status: 500 });
-    imageUrls.push(client.storage.from("listing-images").getPublicUrl(path).data.publicUrl);
+  let body: unknown;
+  try { body = await request.json(); } catch { return NextResponse.json({ error: "Complete every field and add 2 to 6 photos." }, { status: 400 }); }
+  const parsed = listingPublicationSchema.safeParse(body);
+  if (!parsed.success) return NextResponse.json({ error: "Complete every field and add 2 to 6 photos." }, { status: 400 });
+  const priceCents = Math.round(parsed.data.price * 100);
+  const result = await db().rpc("publish_web_listing", {
+    requested_user_id: user.id, requested_upload_ids: parsed.data.uploadIds, requested_title: parsed.data.title,
+    requested_description: parsed.data.description, requested_price_cents: priceCents, requested_condition: parsed.data.condition,
+    requested_city: parsed.data.city, requested_storage_origin: supabaseStorageOrigin(),
+  });
+  const listing = firstRow(result.data as CreatedListing | CreatedListing[] | null);
+  if (result.error || !listing) {
+    const status = result.error?.code === "P0001" || result.error?.code === "23514" ? 400 : 503;
+    return NextResponse.json({ error: status === 400 ? "Photo uploads are invalid or expired. Upload them again." : "Could not publish listing." }, { status });
   }
-  const listing = await client.from("listings").insert({
-    seller_id: user.id, title: parsed.data.title, description: parsed.data.description,
-    price_cents: Math.round(parsed.data.price * 100), condition: parsed.data.condition,
-    city: parsed.data.city, image_urls: imageUrls, status: "active", published_at: new Date().toISOString(),
-  }).select("id,public_token").single();
-  if (listing.error) return NextResponse.json({ error: "Could not publish listing." }, { status: 500 });
-  capturePostHog({ event: "listing_created", distinctId: user.id, properties: { listing_id: listing.data.id, condition: parsed.data.condition, city: parsed.data.city, price_cents: Math.round(parsed.data.price * 100), seller_or_buyer_role: "seller" } });
+  capturePostHog({ event: "listing_created", distinctId: user.id, properties: { listing_id: listing.id, condition: parsed.data.condition, city: parsed.data.city, price_cents: priceCents, seller_or_buyer_role: "seller" } });
   capturePostHog({ event: "sell_request", distinctId: user.id, properties: { city: parsed.data.city, channel: "web" } });
-  return NextResponse.json({ id: listing.data.id, publicToken: listing.data.public_token }, { status: 201 });
+  return NextResponse.json({ id: listing.id, publicToken: listing.public_token }, { status: 201 });
 }
