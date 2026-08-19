@@ -33,6 +33,37 @@ function errorType(error: unknown): string {
   return error instanceof Error ? error.name : "UnknownError";
 }
 
+const SENSITIVE_ENV_NAME = /(secret|token|password|credential|api_?key|service_?role|private_?key)/i;
+
+function redactSensitiveErrorText(value: string): string {
+  let redacted = value;
+  for (const [name, configuredValue] of Object.entries(process.env)) {
+    if (SENSITIVE_ENV_NAME.test(name) && configuredValue && configuredValue.length >= 8) {
+      redacted = redacted.split(configuredValue).join("[REDACTED]");
+    }
+  }
+  return redacted
+    .replace(/\b(authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|credential)\b\s*[:=]\s*(?:Bearer\s+)?(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, "$1=[REDACTED]")
+    .replace(/\b(message|body|content|text|phone|phone_number|phone_e164)\b\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, "$1=[REDACTED]")
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
+    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[REDACTED_TOKEN]")
+    .replace(/https?:\/\/[^\s)\]}]+/gi, "[REDACTED_URL]")
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[REDACTED_EMAIL]")
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/gi, "[REDACTED_ID]")
+    .replace(/(^|[^\w])\+?\d[\d ().-]{7,}\d(?=$|[^\w])/g, "$1[REDACTED_PHONE]");
+}
+
+function safeErrorDetails(error: unknown): Record<string, string> {
+  if (!(error instanceof Error)) return { error_type: "UnknownError", error_message: "Non-Error value thrown" };
+  const details: Record<string, string> = {
+    error_type: error.name,
+    error_message: redactSensitiveErrorText(error.message).slice(0, 500),
+  };
+  const stackFrames = error.stack?.split("\n").slice(1).filter(line => /^\s*at\s/.test(line)).slice(0, 8);
+  if (stackFrames?.length) details.error_stack = redactSensitiveErrorText(stackFrames.join("\n")).slice(0, 2_000);
+  return details;
+}
+
 async function main() {
   log("info", "worker_started");
   let app: Awaited<ReturnType<typeof Spectrum>>;
@@ -91,7 +122,7 @@ async function main() {
         recordSent: async (messageId, spaceId, identity) => recordOutboundEvent({ messageId, spaceId, identity, kind: "dibs_reply", occurredAt: new Date().toISOString() }),
       });
     } catch (error) {
-      log("error", "onboarding_processing_failed", { error_type: errorType(error) });
+      log("error", "onboarding_processing_failed", safeErrorDetails(error));
     } finally {
       onboardingBusy = false;
     }
@@ -108,7 +139,7 @@ async function main() {
     try {
       await processNextNotificationOpportunity({ createSpace: spaceId => iMessage.space.get(spaceId) });
     } catch (error) {
-      log("error", "notification_processing_failed", { error_type: errorType(error) });
+      log("error", "notification_processing_failed", safeErrorDetails(error));
     } finally {
       notificationBusy = false;
     }
