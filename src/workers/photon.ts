@@ -48,9 +48,11 @@ async function main() {
     onboardingBusy = true;
     try {
       await processNextAlphaOnboarding({
-        createSpace: identity => process.env.PHOTON_IMESSAGE_LINE
-          ? iMessage.space.create(identity, { phone: process.env.PHOTON_IMESSAGE_LINE })
-          : iMessage.space.create(identity),
+        resolveSpace: (identity, existingSpaceId) => existingSpaceId
+          ? iMessage.space.get(existingSpaceId)
+          : process.env.PHOTON_IMESSAGE_LINE
+            ? iMessage.space.create(identity, { phone: process.env.PHOTON_IMESSAGE_LINE })
+            : iMessage.space.create(identity),
         recordSent: async (messageId, spaceId, identity) => recordOutboundEvent({ messageId, spaceId, identity, kind: "dibs_reply", occurredAt: new Date().toISOString() }),
       });
     } catch (error) {

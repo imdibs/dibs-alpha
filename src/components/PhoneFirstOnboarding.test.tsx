@@ -7,6 +7,8 @@ import { PhoneFirstOnboarding } from "./PhoneFirstOnboarding";
 const visitorId = "550e8400-e29b-41d4-a716-446655440000";
 const attributionId = "550e8400-e29b-41d4-a716-446655440001";
 const listingToken = "7xK92pAb_Cde";
+const firstRequestId = "550e8400-e29b-41d4-a716-446655440010";
+const secondRequestId = "550e8400-e29b-41d4-a716-446655440011";
 
 function submit(phone = "305-555-0123") {
   fireEvent.change(screen.getByLabelText("Phone number"), { target: { value: phone } });
@@ -16,6 +18,7 @@ function submit(phone = "305-555-0123") {
 describe("PhoneFirstOnboarding", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.stubGlobal("crypto", { randomUUID: vi.fn(() => firstRequestId) });
     history.replaceState({}, "", "/");
   });
   afterEach(cleanup);
@@ -30,7 +33,7 @@ describe("PhoneFirstOnboarding", () => {
     expect(fetch).toHaveBeenCalledWith("/api/onboarding", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ phone: "305-555-0123", source: "direct", visitorId, attributionId, originatingListing: listingToken }),
+      body: JSON.stringify({ phone: "305-555-0123", source: "direct", requestId: firstRequestId, visitorId, attributionId, originatingListing: listingToken }),
     });
   });
 
@@ -61,6 +64,8 @@ describe("PhoneFirstOnboarding", () => {
   });
 
   it("shows an API error and allows retry", async () => {
+    const randomUUID = vi.fn().mockReturnValueOnce(firstRequestId).mockReturnValueOnce(secondRequestId);
+    vi.stubGlobal("crypto", { randomUUID });
     const fetch = vi.fn()
       .mockResolvedValueOnce({ ok: false, json: async () => ({ error: "Too many requests. Try again later." }) })
       .mockResolvedValueOnce({ ok: true, json: async () => ({ accepted: true, initiated: false }) });
@@ -73,6 +78,52 @@ describe("PhoneFirstOnboarding", () => {
     submit();
     await screen.findByText("Dibs will text you shortly.");
     expect(fetch).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(fetch.mock.calls[0][1].body).requestId).toBe(firstRequestId);
+    expect(JSON.parse(fetch.mock.calls[1][1].body).requestId).toBe(secondRequestId);
+  });
+
+  it("reuses requestId after an ambiguous lost response", async () => {
+    const fetch = vi.fn()
+      .mockRejectedValueOnce(new TypeError("network failed"))
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ accepted: true, initiated: false }) });
+    vi.stubGlobal("fetch", fetch);
+    render(<PhoneFirstOnboarding/>);
+    submit();
+    await screen.findByRole("alert");
+    submit();
+    await screen.findByText("Dibs will text you shortly.");
+    expect(JSON.parse(fetch.mock.calls[0][1].body).requestId).toBe(firstRequestId);
+    expect(JSON.parse(fetch.mock.calls[1][1].body).requestId).toBe(firstRequestId);
+  });
+
+  it("reuses requestId after an ambiguous malformed success response", async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => { throw new SyntaxError("truncated response"); } })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ accepted: true, initiated: false }) });
+    vi.stubGlobal("fetch", fetch);
+    render(<PhoneFirstOnboarding/>);
+    submit();
+    await screen.findByRole("alert");
+    submit();
+    await screen.findByText("Dibs will text you shortly.");
+    expect(JSON.parse(fetch.mock.calls[0][1].body).requestId).toBe(firstRequestId);
+    expect(JSON.parse(fetch.mock.calls[1][1].body).requestId).toBe(firstRequestId);
+  });
+
+  it("uses a fresh requestId after a definitive rejected response", async () => {
+    const randomUUID = vi.fn().mockReturnValueOnce(firstRequestId).mockReturnValueOnce(secondRequestId);
+    vi.stubGlobal("crypto", { randomUUID });
+    const fetch = vi.fn()
+      .mockResolvedValueOnce({ ok: false, json: async () => ({ error: "Try again." }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ accepted: true, initiated: false }) });
+    vi.stubGlobal("fetch", fetch);
+    render(<PhoneFirstOnboarding/>);
+    submit();
+    await screen.findByRole("alert");
+    submit();
+    await screen.findByText("Dibs will text you shortly.");
+    expect(JSON.parse(fetch.mock.calls[0][1].body).requestId).toBe(firstRequestId);
+    expect(JSON.parse(fetch.mock.calls[1][1].body).requestId).toBe(secondRequestId);
   });
 
   it("preserves a valid originating listing from the from query parameter", async () => {
@@ -82,6 +133,6 @@ describe("PhoneFirstOnboarding", () => {
     render(<PhoneFirstOnboarding/>);
     submit();
     await waitFor(() => expect(fetch).toHaveBeenCalledOnce());
-    expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual({ phone: "305-555-0123", source: "direct", originatingListing: listingToken });
+    expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual({ phone: "305-555-0123", source: "direct", requestId: firstRequestId, originatingListing: listingToken });
   });
 });

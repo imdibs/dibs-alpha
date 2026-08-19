@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { normalizeE164Phone, normalizeUsPhone } from "@/lib/phone";
-import { onboardingRateLimited } from "@/lib/onboarding-rate-limit";
-import { submitAlphaOnboarding } from "@/lib/onboarding";
+import { onboardingRateLimited, onboardingRecipientKeyHash } from "@/lib/onboarding-rate-limit";
+import { OnboardingRecipientRateLimitError, OnboardingRequestIdConflictError, submitAlphaOnboarding } from "@/lib/onboarding";
 import { getPublicListing } from "@/lib/public-listings";
 import { ACQUISITION_SOURCES, validTrackingToken } from "@/lib/tracking";
 import { publicTokenSchema } from "@/lib/validation";
@@ -10,6 +10,7 @@ import { publicTokenSchema } from "@/lib/validation";
 const schema = z.object({
   phone: z.string().min(8).max(32),
   source: z.enum(ACQUISITION_SOURCES),
+  requestId: z.string().uuid(),
   visitorId: z.string().max(100).optional(),
   attributionId: z.string().max(100).optional(),
   originatingListing: publicTokenSchema.optional(),
@@ -70,10 +71,15 @@ async function handlePost(request: Request) {
   try {
     const listing = parsed.data.originatingListing ? await getPublicListing(parsed.data.originatingListing) : null;
     if (parsed.data.originatingListing && !listing) return NextResponse.json({ error: "Invalid onboarding request." }, { status: 400 });
-    const onboarding = await submitAlphaOnboarding({ phone, source: parsed.data.source, visitorId, attributionId, originatingListingId: listing?.id || null });
-    const initiated = onboarding.state === "sent" || onboarding.state === "replied";
-    return NextResponse.json({ accepted: true, initiated }, { status: initiated ? 200 : 202 });
-  } catch {
+    const messageRequest = await submitAlphaOnboarding({
+      requestId: parsed.data.requestId, phone, source: parsed.data.source,
+      recipientKeyHash: onboardingRecipientKeyHash(phone), visitorId, attributionId,
+      originatingListingId: listing?.id || null,
+    });
+    return NextResponse.json({ accepted: true, initiated: messageRequest.state === "sent", requestId: messageRequest.id }, { status: messageRequest.state === "sent" ? 200 : 202 });
+  } catch (error) {
+    if (error instanceof OnboardingRecipientRateLimitError) return NextResponse.json({ error: "Too many requests for this phone number. Try again later." }, { status: 429 });
+    if (error instanceof OnboardingRequestIdConflictError) return NextResponse.json({ error: "Request ID was already used for different onboarding details." }, { status: 409 });
     return NextResponse.json({ error: "Could not accept onboarding right now." }, { status: 503 });
   }
 }

@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const rpc = vi.hoisted(() => vi.fn());
 vi.mock("./db", () => ({ db: () => ({ rpc }) }));
-import { durableRateLimited } from "./rate-limit";
+import { durableRateLimited, rateLimitKeyHash } from "./rate-limit";
 
 describe("durable rate limiting", () => {
   afterEach(() => { vi.clearAllMocks(); vi.unstubAllEnvs(); });
@@ -26,5 +26,12 @@ describe("durable rate limiting", () => {
     vi.stubEnv("SESSION_SECRET", "a-production-length-session-secret-1234");
     rpc.mockResolvedValue({ data: null, error: { message: "unavailable" } });
     await expect(durableRateLimited(new Request("https://app.dibs.chat"), "public_event", 60, 60)).rejects.toThrow("Rate limit unavailable");
+  });
+
+  it("HMACs recipient identity with a distinct scope and never exposes the raw phone", () => {
+    vi.stubEnv("SESSION_SECRET", "a-production-length-session-secret-1234");
+    const digest = rateLimitKeyHash("onboarding_recipient", "+13055551234");
+    expect(digest).toBe(createHmac("sha256", "a-production-length-session-secret-1234").update("onboarding_recipient:+13055551234").digest("hex"));
+    expect(digest).not.toContain("+13055551234");
   });
 });

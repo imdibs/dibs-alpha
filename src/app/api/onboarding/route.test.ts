@@ -1,24 +1,34 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ submit: vi.fn(), listing: vi.fn(), rateLimited: vi.fn() }));
-vi.mock("@/lib/onboarding", () => ({ submitAlphaOnboarding: mocks.submit }));
+const mocks = vi.hoisted(() => ({
+  submit: vi.fn(), listing: vi.fn(), rateLimited: vi.fn(), recipientHash: vi.fn(() => "a".repeat(64)),
+  RecipientLimitError: class extends Error {},
+  RequestIdConflictError: class extends Error {},
+}));
+vi.mock("@/lib/onboarding", () => ({
+  submitAlphaOnboarding: mocks.submit,
+  OnboardingRecipientRateLimitError: mocks.RecipientLimitError,
+  OnboardingRequestIdConflictError: mocks.RequestIdConflictError,
+}));
 vi.mock("@/lib/public-listings", () => ({ getPublicListing: mocks.listing }));
-vi.mock("@/lib/onboarding-rate-limit", () => ({ onboardingRateLimited: mocks.rateLimited }));
+vi.mock("@/lib/onboarding-rate-limit", () => ({ onboardingRateLimited: mocks.rateLimited, onboardingRecipientKeyHash: mocks.recipientHash }));
 import { OPTIONS, POST } from "./route";
 
 const visitorId = "550e8400-e29b-41d4-a716-446655440000";
 const attributionId = "550e8400-e29b-41d4-a716-446655440001";
 const token = "7xK92pAb_Cde";
+const requestId = "550e8400-e29b-41d4-a716-446655440010";
 function request(body: unknown, ip = "203.0.113.1", origin?: string) {
   const headers: Record<string, string> = { "content-type": "application/json", "x-forwarded-for": ip };
   if (origin) headers.origin = origin;
-  return new Request("https://app.dibs.chat/api/onboarding", { method: "POST", headers, body: JSON.stringify(body) });
+  const withRequestId = typeof body === "object" && body !== null ? { requestId, ...body } : body;
+  return new Request("https://app.dibs.chat/api/onboarding", { method: "POST", headers, body: JSON.stringify(withRequestId) });
 }
 
 describe("CORS /api/onboarding", () => {
   beforeEach(() => {
     vi.clearAllMocks(); vi.unstubAllEnvs(); mocks.rateLimited.mockResolvedValue(false);
-    mocks.submit.mockResolvedValue({ state: "pending" });
+    mocks.submit.mockResolvedValue({ id: requestId, state: "pending" });
   });
 
   it.each([
@@ -90,22 +100,22 @@ describe("POST /api/onboarding", () => {
   beforeEach(() => {
     vi.clearAllMocks(); mocks.rateLimited.mockResolvedValue(false);
     mocks.listing.mockResolvedValue({ id: "listing-1" });
-    mocks.submit.mockResolvedValue({ state: "pending" });
+    mocks.submit.mockResolvedValue({ id: requestId, state: "pending" });
   });
 
   it.each(["+1 305 555 1234", "(305) 555-1234", "305-555-1234"])("accepts and canonicalizes %s", async phone => {
     const response = await POST(request({ phone, source: "website", visitorId, attributionId, originatingListing: token }));
     expect(response.status).toBe(202);
-    expect(await response.json()).toEqual({ accepted: true, initiated: false });
-    expect(mocks.submit).toHaveBeenCalledWith({ phone: "+13055551234", source: "website", visitorId, attributionId, originatingListingId: "listing-1" });
+    expect(await response.json()).toEqual({ accepted: true, initiated: false, requestId });
+    expect(mocks.submit).toHaveBeenCalledWith({ requestId, phone: "+13055551234", source: "website", recipientKeyHash: "a".repeat(64), visitorId, attributionId, originatingListingId: "listing-1" });
   });
 
   it.each(["+919769760891", "+14155552671", "+447911123456"])("accepts canonical international identity %s", async phone => {
     const response = await POST(request({ phone, source: "website" }));
     expect(response.status).toBe(202);
-    expect(await response.json()).toEqual({ accepted: true, initiated: false });
+    expect(await response.json()).toEqual({ accepted: true, initiated: false, requestId });
     expect(mocks.submit).toHaveBeenCalledWith({
-      phone,
+      requestId, phone, recipientKeyHash: "a".repeat(64),
       source: "website",
       visitorId: null,
       attributionId: null,
@@ -114,14 +124,14 @@ describe("POST /api/onboarding", () => {
   });
 
   it("reports initiated only for authoritative sent state and never dispatches caller content", async () => {
-    mocks.submit.mockResolvedValue({ state: "sent" });
+    mocks.submit.mockResolvedValue({ id: requestId, state: "sent" });
     const response = await POST(request({ phone: "3055551234", source: "referral" }));
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ accepted: true, initiated: true });
+    expect(await response.json()).toEqual({ accepted: true, initiated: true, requestId });
   });
 
   it("preserves durable idempotency handling for repeated equivalent submissions", async () => {
-    mocks.submit.mockResolvedValueOnce({ state: "pending" }).mockResolvedValueOnce({ state: "sent" });
+    mocks.submit.mockResolvedValueOnce({ id: requestId, state: "pending" }).mockResolvedValueOnce({ id: requestId, state: "sent" });
     const first = await POST(request({ phone: "(305) 555-0123", source: "website" }, "203.0.113.20"));
     const repeated = await POST(request({ phone: "+1 305 555 0123", source: "website" }, "203.0.113.20"));
     expect(first.status).toBe(202);
@@ -147,6 +157,25 @@ describe("POST /api/onboarding", () => {
   ])("rejects malformed or privileged payload %#", async body => {
     expect((await POST(request(body))).status).toBe(400);
     expect(mocks.submit).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, "not-a-uuid"])("rejects missing or invalid request IDs: %s", async invalidRequestId => {
+    expect((await POST(request({ phone: "3055551234", source: "direct", requestId: invalidRequestId }))).status).toBe(400);
+    expect(mocks.submit).not.toHaveBeenCalled();
+  });
+
+  it("maps the durable per-recipient limit to a controlled 429", async () => {
+    mocks.submit.mockRejectedValueOnce(new mocks.RecipientLimitError());
+    const response = await POST(request({ phone: "3055551234", source: "direct" }));
+    expect(response.status).toBe(429);
+    expect(await response.json()).toEqual({ error: "Too many requests for this phone number. Try again later." });
+  });
+
+  it("maps request ID payload conflicts to a controlled 409", async () => {
+    mocks.submit.mockRejectedValueOnce(new mocks.RequestIdConflictError());
+    const response = await POST(request({ phone: "3055551234", source: "direct" }));
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "Request ID was already used for different onboarding details." });
   });
 
   it("rejects missing originating listings and controlled persistence failures", async () => {

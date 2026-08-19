@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
 
-type OnboardingResponse = { accepted?: boolean; initiated?: boolean; error?: string };
+type OnboardingResponse = { accepted?: boolean; initiated?: boolean; requestId?: string; error?: string };
 type Props = { originatingListing?: string; visitorId?: string; attributionId?: string };
 
 const trackingTokenPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -29,6 +29,7 @@ export function PhoneFirstOnboarding(props: Props) {
   const [busy, setBusy] = useState(false);
   const [success, setSuccess] = useState<"pending" | "initiated" | null>(null);
   const [error, setError] = useState("");
+  const pendingRequestId = useRef<string | null>(null);
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -37,14 +38,25 @@ export function PhoneFirstOnboarding(props: Props) {
     setError("");
     const phone = String(new FormData(event.currentTarget).get("phone") || "");
     const attribution = onboardingAttribution(props);
-    const body = { phone, source: "direct", ...Object.fromEntries(Object.entries(attribution).filter(([, value]) => value !== undefined)) };
+    const requestId = pendingRequestId.current || crypto.randomUUID();
+    pendingRequestId.current = requestId;
+    const body = { phone, source: "direct", requestId, ...Object.fromEntries(Object.entries(attribution).filter(([, value]) => value !== undefined)) };
+    let definitiveResponse = false;
     try {
       const response = await fetch("/api/onboarding", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const data = await response.json().catch(() => ({})) as OnboardingResponse;
-      if (!response.ok || !data.accepted) throw new Error(data.error || "Dibs couldn't start the conversation. Please try again.");
+      if (!response.ok) {
+        definitiveResponse = true;
+        throw new Error(data.error || "Dibs couldn't start the conversation. Please try again.");
+      }
+      if (!data.accepted) throw new Error(data.error || "Dibs couldn't start the conversation. Please try again.");
+      pendingRequestId.current = null;
       setSuccess(data.initiated ? "initiated" : "pending");
       setBusy(false);
     } catch (cause) {
+      // A definitive HTTP response means the next click is a new logical
+      // submission. A lost/ambiguous response keeps the same idempotency key.
+      if (definitiveResponse) pendingRequestId.current = null;
       setError(cause instanceof Error ? cause.message : "Dibs couldn't start the conversation. Please try again.");
       setBusy(false);
     }
