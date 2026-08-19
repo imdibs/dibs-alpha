@@ -19,6 +19,7 @@ export type InboundMessage = {
   occurredAt: string;
   text: string;
   attachments: MessagingAttachment[];
+  providerLine?: string;
 };
 
 type Search = (input: string, defaultCity?: string) => Promise<ListingSearchResult>;

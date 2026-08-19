@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { MessagingSession } from "../marketplace";
 import type { Listing } from "../types";
 import { createToolExecutor, type ToolDependencies } from "./tools";
+import { listingDescription } from "../seller-listing";
 
 const trusted = { userId: "trusted-user", normalizedIdentity: "+13055550123", inboundMessageId: "inbound-1", photonSpaceId: "space-1", defaultCity: "Miami, FL", currentMessageText: "yes" };
 const draft = { title: "PS5 DualSense controller", category: "electronics" as const, age: "Bought 2 months ago.", functionality: "Works perfectly.", defects: "No scratches or stick drift.", includedItems: "Includes controller and cable.", packaging: "No original box.", condition: "like_new" as const, priceCents: 4000, city: "Miami", photos: [{ id: "p", path: "trusted-user/p.jpg", url: "https://photo" }, { id: "q", path: "trusted-user/q.jpg", url: "https://photo-2" }] };
@@ -24,7 +25,7 @@ describe("actor-bound marketplace AI tools", () => {
       saveSession: vi.fn(async (_identity, patch) => { state = { ...state, ...patch }; }),
       getListing: vi.fn(async id => id === owned.id ? owned as never : id === published?.id ? published as never : null), getOwned: vi.fn(async () => [owned]),
       createListing: vi.fn(async (userId, input, id) => {
-        published = { id: id!, seller_id: userId, title: input.title!, description: [input.age, input.functionality, input.defects, input.includedItems, input.packaging].join(" "), price_cents: input.priceCents!, condition: input.condition!, city: input.city!, image_urls: input.photos.map((photo: { url: string }) => photo.url), status: "draft", created_at: "now", public_token: "AbCdEf123456" };
+        published = { id: id!, seller_id: userId, title: input.title!, description: listingDescription(input), price_cents: input.priceCents!, condition: input.condition!, city: input.city!, image_urls: input.photos.map((photo: { url: string }) => photo.url), status: "draft", created_at: "now", public_token: "AbCdEf123456" };
         return { id: id! };
       }), activateListing: vi.fn(async () => { if (published) published = { ...published, status: "active" }; }), updateListing: vi.fn(async () => undefined), deleteDraftPhotos: vi.fn(async () => undefined), updateProfile: vi.fn(async () => undefined), recordEvent: vi.fn(async () => undefined),
     };
@@ -108,7 +109,8 @@ describe("actor-bound marketplace AI tools", () => {
     state = session({ seller_draft: draft, seller_draft_version: 7, pending_listing_action: { type: "publish", draftVersion: 7, preparedByInboundMessageId: "review-message" } });
     expect((await execute({ name: "publishListing", arguments: { expectedDraftVersion: 6 } })).ok).toBe(false);
     expect(deps.createListing).not.toHaveBeenCalled();
-    expect((await execute({ name: "publishListing", arguments: { expectedDraftVersion: 7 } })).ok).toBe(true);
+    const publishResult = await execute({ name: "publishListing", arguments: { expectedDraftVersion: 7 } });
+    expect(publishResult, JSON.stringify(publishResult)).toMatchObject({ ok: true });
     expect(deps.createListing).toHaveBeenCalledWith("trusted-user", draft, expect.any(String));
     expect(state.seller_draft).toBeNull();
     expect(state.pending_listing_action).toBeNull();
@@ -138,11 +140,11 @@ describe("actor-bound marketplace AI tools", () => {
   });
 
   it("retries verification without creating a duplicate listing", async () => {
-    const existing: Listing = { id: "publish-id", seller_id: trusted.userId, title: draft.title, description: [draft.age, draft.functionality, draft.defects, draft.includedItems, draft.packaging].join(" "), price_cents: draft.priceCents, condition: draft.condition, city: draft.city, image_urls: draft.photos.map(photo => photo.url), status: "active", created_at: "now", public_token: "AbCdEf123456" };
+    const existing: Listing = { id: "publish-id", seller_id: trusted.userId, title: draft.title, description: listingDescription(draft), price_cents: draft.priceCents, condition: draft.condition, city: draft.city, image_urls: draft.photos.map(photo => photo.url), status: "active", created_at: "now", public_token: "AbCdEf123456" };
     state = session({ seller_draft: draft, seller_draft_version: 7, pending_listing_action: { type: "publish", draftVersion: 7, listingId: existing.id, preparedByInboundMessageId: "review-message" } });
     deps.getListing = vi.fn(async () => existing as never);
     const result = await createToolExecutor(trusted, deps)({ name: "publishListing", arguments: { expectedDraftVersion: 7 } });
-    expect(result).toMatchObject({ ok: true, data: { published: true, verified: true } });
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true, data: { published: true, verified: true } });
     expect(deps.createListing).not.toHaveBeenCalled();
   });
 
@@ -167,5 +169,20 @@ describe("actor-bound marketplace AI tools", () => {
     state = session({ recent_listing_ids: ["other", owned.id] });
     const result = await createToolExecutor(trusted, deps)({ name: "getListing", arguments: { listingNumber: 2, photoMode: "none" } });
     expect(result).toMatchObject({ ok: true, data: { displayedOrdinal: 2, title: "My PS5" } });
+  });
+
+  it("connects with no model-controlled arguments using trusted buyer and selected listing", async () => {
+    state = session({ selected_listing_id: owned.id });
+    deps.connectMarketplace = vi.fn(async () => ({ conversationId: "conversation-1", providerSpaceId: "group-1", status: "connected", reused: false }));
+    const result = await createToolExecutor(trusted, deps)({ name: "connectBuyerToSeller", arguments: {} });
+    expect(result).toMatchObject({ ok: true, data: { status: "connected" } });
+    expect(deps.connectMarketplace).toHaveBeenCalledWith({ buyerId: trusted.userId, selectedListingId: owned.id });
+  });
+
+  it("rejects connect arguments and requires a selected listing", async () => {
+    deps.connectMarketplace = vi.fn();
+    expect((await createToolExecutor(trusted, deps)({ name: "connectBuyerToSeller", arguments: { sellerId: "attacker" } })).ok).toBe(false);
+    expect((await createToolExecutor(trusted, deps)({ name: "connectBuyerToSeller", arguments: {} })).ok).toBe(false);
+    expect(deps.connectMarketplace).not.toHaveBeenCalled();
   });
 });

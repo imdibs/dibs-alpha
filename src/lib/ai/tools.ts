@@ -39,6 +39,7 @@ export type ToolDependencies = {
   deleteDraftPhotos: typeof deleteSellerDraftPhotos;
   updateProfile: typeof updateIMessageUserProfile;
   recordEvent?: typeof recordProductEvent;
+  connectMarketplace?: (trusted: { buyerId: string; selectedListingId: string }) => Promise<unknown>;
 };
 const defaults: ToolDependencies = {
   search: searchListingsByIntent, getSession: getMessagingSession, saveSession: saveMessagingSession,
@@ -126,6 +127,14 @@ export function createToolExecutor(context: TrustedToolContext, overrides: Parti
         }
         case "getActiveConversation": empty.parse(request.arguments); data = { available: false, reason: "Buyer/seller relay tools are deferred in Phase 1." }; break;
         case "getRecentConversationHistory": empty.parse(request.arguments); data = { availableInPrompt: true }; break;
+        case "connectBuyerToSeller": {
+          empty.parse(request.arguments);
+          const session = await deps.getSession(context.normalizedIdentity);
+          if (!session?.selected_listing_id) throw new Error("Select a listing before asking to connect.");
+          if (!deps.connectMarketplace) throw new Error("Real iMessage groups are unavailable; the private relay remains available.");
+          data = await deps.connectMarketplace({ buyerId: context.userId, selectedListingId: session.selected_listing_id });
+          break;
+        }
         case "updateSellerDraft": {
           const args = z.object({ patch: draftPatch }).strict().parse(request.arguments);
           const session = await deps.getSession(context.normalizedIdentity);

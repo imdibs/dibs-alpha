@@ -3,7 +3,7 @@ import { buildPhotonReply, parsePhotonInbound, photonAttachmentMetadata, sendPho
 import { displayListingTitle, formatSearchResults, renderRelay, routeInboundMessage } from "./messaging";
 import { normalizeIMessageIdentity } from "./marketplace";
 
-const space = { id: "chat-123", send: vi.fn(async () => undefined) };
+const space = { id: "chat-123", phone: "+13055550000", send: vi.fn(async () => undefined) };
 
 describe("Photon messaging adapter", () => {
   it("parses inbound text and identifies its sender and conversation", () => {
@@ -14,7 +14,7 @@ describe("Photon messaging adapter", () => {
     })).toEqual({
       messageId: "message-1", conversationId: "chat-123", senderId: "+13055550123",
       occurredAt: "2026-08-11T12:00:00.000Z",
-      text: " Find me a PS5 under $300 near me. ", attachments: [],
+      text: " Find me a PS5 under $300 near me. ", attachments: [], providerLine: "+13055550000",
     });
   });
 

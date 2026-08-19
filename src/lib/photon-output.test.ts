@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 import type { OutboundMessage } from "./messaging";
-import { followupScheduleRequest } from "./notifications/scheduling";
 import { sendOrderedPhotonOutput } from "./photon-output";
 
 describe("Photon ordered output transport", () => {
@@ -63,33 +62,55 @@ describe("Photon ordered output transport", () => {
     expect(sent).toEqual(["what's the make and model?"]);
   });
 
-  it("schedules once from the last confirmed text when a later text send fails", async () => {
-    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  it("surfaces a failed send instead of silently swallowing it", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const space = { id: "space-1", send: vi.fn()
-      .mockResolvedValueOnce({ id: "outbound-1", timestamp: new Date("2026-08-11T12:00:01.000Z") })
-      .mockResolvedValueOnce({ id: "outbound-2", timestamp: new Date("2026-08-11T12:00:02.000Z") })
-      .mockRejectedValueOnce(new Error("text 3 failed")) };
+      .mockRejectedValueOnce(new TypeError(`provider rejected https://private.test token=secret-value ${"x".repeat(600)}`)) };
     const record = vi.fn(async () => undefined);
-    const schedule = vi.fn(async (_userId: string, _inboundMessageId: string, _outboundMessageId: string) => undefined);
 
-    const sent = await sendOrderedPhotonOutput(space as never, "+13055550123", {
-      text: "three parts",
-      parts: [
-        { type: "text", text: "text 1" },
-        { type: "text", text: "text 2" },
-        { type: "text", text: "text 3" },
-      ],
+    await expect(sendOrderedPhotonOutput(space as never, "+13055550123", {
+      text: "hello",
+    }, "dibs_reply", record)).rejects.toThrow("provider rejected");
+
+    expect(record).not.toHaveBeenCalled();
+    expect(logged).toHaveBeenCalledOnce();
+    const entry = JSON.parse(String(logged.mock.calls[0][0]));
+    expect(entry).toMatchObject({
+      level: "error",
+      event: "photon_text_send_failed",
+      service: "dibs-photon-output",
+      error_type: "TypeError",
+      space_id: "space-1",
+      message_kind: "dibs_reply",
+    });
+    expect(entry.error_message).toContain("provider rejected [REDACTED_URL] token=[REDACTED]");
+    expect(entry.error_message).not.toContain("secret-value");
+    expect(entry.error_message).toHaveLength(500);
+    logged.mockRestore();
+  });
+
+  it("does not treat recording failure after a successful send as delivery failure", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const sentAt = new Date("2026-08-11T12:00:01.000Z");
+    const space = { id: "space-1", send: vi.fn(async () => ({ id: "outbound-1", timestamp: sentAt })) };
+    const recordError = new Error("database unavailable");
+    const record = vi.fn(async () => { throw recordError; });
+
+    const result = await sendOrderedPhotonOutput(space as never, "+13055550123", {
+      text: "delivered text",
     }, "dibs_reply", record);
-    const followup = followupScheduleRequest({
-      messageId: "inbound-1", conversationId: "space-1", senderId: "+13055550123",
-      occurredAt: "2026-08-11T12:00:00.000Z", text: "find a PS5", attachments: [],
-    }, { response: { text: "three parts" }, followupUserId: "user-1" }, sent.textMessages);
-    if (followup) await schedule(followup.userId, followup.inboundMessageId, followup.outboundMessageId);
 
-    expect(sent.textMessages.map(message => message.id)).toEqual(["outbound-1", "outbound-2"]);
-    expect(schedule).toHaveBeenCalledOnce();
-    expect(schedule).toHaveBeenCalledWith("user-1", "inbound-1", "outbound-2");
-    expect(warning).toHaveBeenCalledWith("Could not send Photon text", "text 3 failed");
+    expect(space.send).toHaveBeenCalledOnce();
+    expect(result.textMessages).toEqual([{ id: "outbound-1", occurredAt: sentAt.toISOString() }]);
+    expect(warning).toHaveBeenCalledOnce();
+    expect(JSON.parse(String(warning.mock.calls[0][0]))).toMatchObject({
+      level: "warn",
+      event: "photon_outbound_recording_failed",
+      error_type: "Error",
+      error_message: "database unavailable",
+      space_id: "space-1",
+      message_kind: "dibs_reply",
+    });
     warning.mockRestore();
   });
 });

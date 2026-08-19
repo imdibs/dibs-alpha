@@ -27,6 +27,7 @@ export const TOOL_NAMES = [
   "getCurrentSellerDraft", "getOwnedListings", "getActiveConversation", "getRecentConversationHistory",
   "updateSellerDraft", "discardSellerDraft", "reviewSellerDraft", "publishListing",
   "updateOwnedListingPrice", "markOwnedListingSold", "removeOwnedListing",
+  "connectBuyerToSeller",
 ] as const;
 export type ToolName = typeof TOOL_NAMES[number];
 export type ToolRequest = { name: ToolName; arguments: Record<string, unknown> };

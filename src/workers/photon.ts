@@ -10,6 +10,7 @@ import { processNextNotificationOpportunity } from "../lib/notifications/process
 import { scheduleUnansweredFollowup } from "../lib/notifications/store";
 import { withNotificationDeliveryGate } from "../lib/notifications/delivery-gate";
 import { followupScheduleRequest } from "../lib/notifications/scheduling";
+import { connectBuyerToSeller } from "../lib/marketplace-connection";
 
 function required(name: "PHOTON_PROJECT_ID" | "PHOTON_PROJECT_SECRET"): string {
   const value = process.env[name]?.trim();
@@ -177,6 +178,15 @@ async function main() {
       await withNotificationDeliveryGate(inbound.conversationId, () => space.responding(async () => {
         const result = await routePhotonMessage(inbound, {
           defaultCity: process.env.PHOTON_DEFAULT_CITY || "Miami, FL",
+          toolDependencies: {
+            connectMarketplace: trusted => connectBuyerToSeller(trusted, {
+              configuredLine: process.env.PHOTON_IMESSAGE_LINE,
+              provider: {
+                create: (addresses, options) => iMessage.space.create(addresses, options),
+                get: (id, options) => iMessage.space.get(id, options),
+              },
+            }),
+          },
         });
         if (result.duplicate) {
           log("info", "inbound_duplicate_ignored");

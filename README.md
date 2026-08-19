@@ -5,22 +5,24 @@ The smallest useful Dibs loop: create a listing, ask for an item in natural lang
 ## Local setup
 
 1. Create a free Supabase project.
-2. Run migrations `001_alpha.sql` through `010_web_listing_uploads_and_rate_limits.sql` in order in its SQL editor.
+2. Run migrations `001_alpha.sql` through `012_marketplace_imessage_groups.sql` in order in its SQL editor.
 3. Copy `.env.example` to `.env.local` and add the project URL, service-role key, and a random 32+ character session secret.
 4. Run `npm install && npm run dev`.
 
-## Private iMessage relay
+## iMessage marketplace connections
 
-Before starting the AI-enabled worker, run migrations `002` through `006` in order in the Supabase SQL editor. An authenticated inbound Photon identity is normalized and automatically recognized as a Dibs user; email is not required for iMessage search, selling, buying, or relay conversations. Existing Alpha users may still be linked manually as a fallback:
+Before starting the AI-enabled worker, apply migrations through `012_marketplace_imessage_groups.sql` in the Supabase SQL editor. An authenticated inbound Photon identity is normalized and automatically recognized as a Dibs user; email is not required for iMessage search, selling, buying, or marketplace conversations. Existing Alpha users may still be linked manually as a fallback:
 
 ```sql
 update users set imessage_address = '+13055550123' where email = 'buyer@example.com';
 update users set imessage_address = '+13055550456' where email = 'seller@example.com';
 ```
 
-Phone identities must use E.164 (`+` plus country code and digits); iMessage email identities must be lowercase. Never put one participant's identity in messages or user-facing output. The listing must belong to the linked seller. If the Photon project manages more than one outbound iMessage line, set `PHOTON_IMESSAGE_LINE` to the Dibs line so both private threads consistently use the same Dibs identity.
+Phone identities must use E.164 (`+` plus country code and digits); iMessage email identities must be lowercase. Never put one participant's identity in messages or user-facing output. The listing must belong to the linked seller. Set `PHOTON_IMESSAGE_LINE` to a dedicated Dibs line: Spectrum group creation does not support shared-line mode. The connection tool creates one durable group per buyer/listing pair and reuses it on subsequent calls. Private buyer/seller relay remains the fallback for conversations that have not been connected to a group.
 
-The worker accepts only provider events explicitly marked `inbound`, uses the provider sender identity rather than phone numbers typed into message text, claims each parent Photon message ID once, and records Spectrum's outbound message IDs separately. Text, one-photo, and grouped text/photo messages are supported; grouped content remains one inbound event. Do not start the updated worker until migrations `002`, `003`, and `004` are present.
+The worker accepts only provider events explicitly marked `inbound`, uses the provider sender identity rather than phone numbers typed into message text, claims each parent Photon message ID once, and records Spectrum's outbound message IDs separately. Text, one-photo, and grouped text/photo messages are supported; grouped content remains one inbound event. Connected groups are resolved by the exact Spectrum space ID and receiving line before private routing. Only the two persisted participant identities may write to the marketplace conversation; group messages are persisted without a bot reply. Do not start the updated worker until migration `012` is present.
+
+If group creation or introduction delivery has an ambiguous provider failure, the conversation enters `reconciliation_required`. Inspect the Spectrum space and the conversation row before changing its state; do not blindly retry and risk creating a duplicate group or introduction.
 
 Seller drafts require two to six JPEG, PNG, WebP, GIF, HEIC, or HEIF photos, at most 8 MB each. Photos are uploaded from their real attachment bytes to `listing-images`. Publishing, removal, sold status, and price changes require a separate explicit confirmation message. Cancelled unpublished drafts have their uploaded files removed.
 
@@ -42,7 +44,9 @@ The standalone public website is maintained in the separate `dibs.web` repositor
 
 ## Deploy
 
-Apply migrations `001` through `010` before inviting users. Supabase serves listing images from the public `listing-images` bucket; web sellers upload directly with short-lived server-authorized URLs and publish through a small metadata request. Never put secrets in this README or commit environment-specific credentials.
+Apply migrations `001` through `012` before inviting users. Supabase serves listing images from the public `listing-images` bucket; web sellers upload directly with short-lived server-authorized URLs and publish through a small metadata request. Never put secrets in this README or commit environment-specific credentials.
+
+After configuring the dedicated line, manually verify one new buyer/listing connection and one reused connection. Confirm that Spectrum creates a group containing exactly the buyer and seller, sends one introduction, routes inbound messages from both participants without a bot reply, ignores a repeated provider message ID, rejects an unknown sender, and leaves an unconnected conversation on the private relay path.
 
 ### Isolated staging
 

@@ -12,6 +12,7 @@ import { sanitizeOutboundMessage } from "./imessage-text";
 import type { Listing } from "./types";
 import { markAlphaOnboardingReplied, markOnboardingCompleted } from "./onboarding";
 import { cancelNotificationFollowups } from "./notifications/store";
+import { routeMarketplaceGroupMessage, type MarketplaceGroupRoutingRepository } from "./marketplace-group-routing";
 
 export type PhotonRouterDependencies = {
   aiClient?: AiClient;
@@ -22,6 +23,7 @@ export type PhotonRouterDependencies = {
   markOnboardingReplied?: typeof markAlphaOnboardingReplied;
   markOnboardingCompleted?: typeof markOnboardingCompleted;
   cancelFollowups?: typeof cancelNotificationFollowups;
+  groupRoutingRepository?: MarketplaceGroupRoutingRepository;
 };
 export type PhotonRouterResult = {
   response?: OutboundMessage;
@@ -48,6 +50,11 @@ export async function routePhotonMessage(message: InboundMessage, options: Photo
   if (!identity) return { response: { text: "I couldn't verify that iMessage sender." } };
   if (!await claimInboundEvent(message.messageId, message.conversationId, identity, message.occurredAt)) return { duplicate: true };
   try {
+    const group = await routeMarketplaceGroupMessage(message, options.groupRoutingRepository);
+    if (group.handled) {
+      await completePhotonEvent(message.messageId);
+      return {};
+    }
     const recognized = await recognizeIMessageUser(identity);
     if (!recognized) throw new Error("I couldn't recognize this iMessage account.");
     const user = recognized.user;
