@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "photon": "tsx --env-file=.env.local src/workers/photon.ts",
+    "photon": "tsx src/workers/photon.ts",
+    "photon:local": "tsx --env-file=.env.local src/workers/photon.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
