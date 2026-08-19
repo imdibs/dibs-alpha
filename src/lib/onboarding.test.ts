@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ rpc: vi.fn(), recordEvent: vi.fn(), getSession: vi.fn(), saveSession: vi.fn() }));
-vi.mock("./db", () => ({ db: () => ({ rpc: mocks.rpc }) }));
+const mocks = vi.hoisted(() => ({ rpc: vi.fn(), from: vi.fn(), recordEvent: vi.fn(), getSession: vi.fn(), saveSession: vi.fn() }));
+vi.mock("./db", () => ({ db: () => ({ rpc: mocks.rpc, from: mocks.from }) }));
 vi.mock("./analytics", () => ({ recordProductEvent: mocks.recordEvent }));
 vi.mock("./marketplace", () => ({ getMessagingSession: mocks.getSession, saveMessagingSession: mocks.saveSession }));
-import { ALPHA_FIRST_MESSAGE, processNextAlphaOnboarding, submitAlphaOnboarding } from "./onboarding";
+import { ALPHA_FIRST_MESSAGE, markAlphaOnboardingReplied, markOnboardingCompleted, processNextAlphaOnboarding, submitAlphaOnboarding } from "./onboarding";
 
 const messageRequest = {
   id: "550e8400-e29b-41d4-a716-446655440010", alpha_onboarding_id: "alpha-1",
@@ -30,6 +30,36 @@ describe("onboarding message request delivery", () => {
     mocks.recordEvent.mockResolvedValue(undefined);
     mocks.getSession.mockResolvedValue(null);
     mocks.saveSession.mockResolvedValue(undefined);
+    mocks.from.mockReset();
+  });
+
+  it("records first reply without activating or completing semantic onboarding", async () => {
+    const maybeSingle = vi.fn(async () => ({ error: null, data: { user_id: "user-1", source: "website", visitor_id: null, attribution_token: null, originating_listing_id: null } }));
+    const select = vi.fn(() => ({ maybeSingle }));
+    const inStates = vi.fn(() => ({ select }));
+    const eq = vi.fn(() => ({ in: inStates }));
+    const update = vi.fn(() => ({ eq }));
+    mocks.from.mockReturnValue({ update });
+    await markAlphaOnboardingReplied("+13055551234", "space-1");
+    expect(mocks.from).toHaveBeenCalledTimes(1);
+    expect(mocks.from).toHaveBeenCalledWith("alpha_onboardings");
+    expect(mocks.recordEvent).toHaveBeenCalledWith(expect.objectContaining({ eventName: "alpha_user_replied" }));
+    expect(mocks.recordEvent).not.toHaveBeenCalledWith(expect.objectContaining({ eventName: "onboarding_completed" }));
+  });
+
+  it("emits semantic completion only when no completion event exists", async () => {
+    const maybeSingle = vi.fn()
+      .mockResolvedValueOnce({ error: null, data: null })
+      .mockResolvedValueOnce({ error: null, data: { id: "event-1" } });
+    const limit = vi.fn(() => ({ maybeSingle }));
+    const eventEq = vi.fn(() => ({ limit }));
+    const userEq = vi.fn(() => ({ eq: eventEq }));
+    const select = vi.fn(() => ({ eq: userEq }));
+    mocks.from.mockReturnValue({ select });
+    await markOnboardingCompleted("user-1", "buy");
+    await markOnboardingCompleted("user-1", "buy");
+    expect(mocks.recordEvent).toHaveBeenCalledTimes(1);
+    expect(mocks.recordEvent).toHaveBeenCalledWith(expect.objectContaining({ eventName: "onboarding_completed", userId: "user-1", metadata: expect.objectContaining({ direction: "buy" }) }));
   });
 
   it("sends the backend-owned template and completes only the claimed request", async () => {
@@ -38,6 +68,7 @@ describe("onboarding message request delivery", () => {
     expect(await processNextAlphaOnboarding(transport)).toBe(true);
     expect(transport.resolveSpace).toHaveBeenCalledWith("+13055551234", null);
     expect(send).toHaveBeenCalledWith(ALPHA_FIRST_MESSAGE);
+    expect(ALPHA_FIRST_MESSAGE).toBe("yo, i'm Dibs. i help people buy and sell around Miami. you looking for something, selling something, or just checking it out?");
     expect(mocks.saveSession).toHaveBeenCalledWith("+13055551234", { user_id: "user-1", photon_space_id: "space-1" });
     expect(mocks.rpc).toHaveBeenCalledWith("complete_onboarding_message_request", expect.objectContaining({ requested_id: messageRequest.id, requested_provider_message_id: "provider-1" }));
     expect(mocks.recordEvent).toHaveBeenCalledWith(expect.objectContaining({ eventName: "onboarding_message_sent", userId: "user-1" }));

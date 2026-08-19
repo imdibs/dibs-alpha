@@ -40,6 +40,7 @@ function listingContext(listing: Listing | null) {
 function safeContext(context: AgentContext) {
   const draft = context.sellerDraft;
   return {
+    profile: { name: context.name, city: context.city },
     session: context.session ? {
       contextKind: context.session.context_kind, recentResultCount: context.session.recent_listing_ids.length,
       hasSelectedListing: Boolean(context.session.selected_listing_id), hasActiveConversation: Boolean(context.session.active_conversation_id),
@@ -52,6 +53,7 @@ function safeContext(context: AgentContext) {
 }
 function toolGuide() {
   return `Available tools are ${TOOL_NAMES.join(", ")}.
+Use updateUserProfile args {name?,city?} only when the user explicitly states their own name or city/location. Capture both when both are explicit. Never infer either from metadata, a phone number, the default search city, listings, or unrelated text. Never ask for a profile fact already present in structured context. Profile details are optional and must never delay a marketplace action; include updateUserProfile alongside the marketplace tool when both apply.
 The arguments field must be a JSON-encoded object string. Use searchListings args {query,maxPriceCents,city}, but do not search a broad high-volume item request with no meaningful constraint; ask one useful narrowing question instead. A price ceiling is enough to search immediately. Use getListing/getSelectedListing args {listingNumber?,photoMode}; selecting an ordinal uses getListing with that number, and photoMode=remaining is only for more-photo requests. For "can i see it?" after publish, use getSelectedListing with photoMode=initial so the listing and photos are authoritative. Use updateSellerDraft args {patch}; capture category and every supported fact from the current message in its typed field. Treat the current draft as known: ask only for missingFields returned by the backend, grouping at most two related questions, and never ask for an already-populated field. Use reviewSellerDraft when complete details need confirmation. Call publishListing only for a natural confirmation with a matching pending publish, passing expectedDraftVersion from context. Owned-listing mutation tools use {listingNumber,priceCents?,confirm}; confirm=true only when the current message confirms the matching pending action. Use no tool for greetings, thanks, capability questions, "nothing," or ordinary chat.`;
 }
 

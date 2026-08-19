@@ -46,10 +46,12 @@ Create trends with daily interval and saved variants for Today, 7 days, and 30 d
 Create a unique-users funnel with ordered steps and a 30-day conversion window:
 
 1. `user_signed_up`
-2. `onboarding_completed`
-3. `first_message_received`
+2. `first_message_received`
+3. `onboarding_completed`
 4. `first_response_sent`
 5. `buy_request` **or** `sell_request` (use a grouped final step)
+
+For iMessage, `first_message_received` is emitted from the historical delivery reply acknowledgement. `onboarding_completed` is separate and is emitted once only after the user establishes a meaningful buy, sell, browse, or existing-flow direction. A greeting alone does not complete onboarding.
 
 Add a second retention/trend insight for repeat marketplace interaction: users with at least two `buy_request` or `sell_request` events in the selected period. No separate activation-state event is stored.
 

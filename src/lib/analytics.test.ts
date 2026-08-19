@@ -27,4 +27,13 @@ describe("PostHog product event mapping", () => {
   it("does not forward unmapped first-party metadata", () => {
     expect(postHogEventsForProductEvent({ eventName: "unknown_internal_event", metadata: { message: "private", email: "person@example.com" } })).toEqual([]);
   });
+
+  it("maps a first reply separately from meaningful onboarding completion", () => {
+    expect(postHogEventsForProductEvent({ eventName: "alpha_user_replied", userId: "user-1" })).toEqual([
+      { event: "first_message_received", distinctId: "user-1", properties: { channel: "imessage", message_kind: "onboarding_reply" } },
+    ]);
+    expect(postHogEventsForProductEvent({ eventName: "onboarding_completed", userId: "user-1", metadata: { direction: "buy" } })).toEqual([
+      { event: "onboarding_completed", distinctId: "user-1", properties: { source: undefined, onboarding_method: "imessage" } },
+    ]);
+  });
 });

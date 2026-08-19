@@ -8,11 +8,13 @@ const mocks = vi.hoisted(() => ({
   claimInboundEvent: vi.fn(), completePhotonEvent: vi.fn(), conversationDetails: vi.fn(), getMessagingSession: vi.fn(),
   listingForMessaging: vi.fn(), persistDibsMessage: vi.fn(), persistParticipantMessage: vi.fn(), recognizeIMessageUser: vi.fn(),
   saveMessagingSession: vi.fn(), uploadSellerPhotos: vi.fn(),
+  updateIMessageUserProfile: vi.fn(),
   markAlphaOnboardingReplied: vi.fn(),
+  markOnboardingCompleted: vi.fn(),
   cancelNotificationFollowups: vi.fn(),
 }));
 vi.mock("./marketplace", () => ({ ...mocks, normalizeIMessageIdentity: (value: string) => value.startsWith("+") ? value : null }));
-vi.mock("./onboarding", () => ({ markAlphaOnboardingReplied: mocks.markAlphaOnboardingReplied }));
+vi.mock("./onboarding", () => ({ markAlphaOnboardingReplied: mocks.markAlphaOnboardingReplied, markOnboardingCompleted: mocks.markOnboardingCompleted }));
 vi.mock("./notifications/store", () => ({ cancelNotificationFollowups: mocks.cancelNotificationFollowups }));
 import { routePhotonMessage } from "./photon-router";
 
@@ -27,6 +29,7 @@ describe("Photon AI routing boundary", () => {
     mocks.recognizeIMessageUser.mockResolvedValue({ user: { id: "user-1", city: "Miami, FL", name: null, imessage_address: "+13055550123" }, isNew: false });
     mocks.getMessagingSession.mockResolvedValue(session()); mocks.saveMessagingSession.mockResolvedValue(undefined); mocks.listingForMessaging.mockResolvedValue(null);
     mocks.markAlphaOnboardingReplied.mockResolvedValue(undefined);
+    mocks.markOnboardingCompleted.mockResolvedValue(undefined);
     mocks.cancelNotificationFollowups.mockResolvedValue(0);
   });
 
@@ -37,6 +40,31 @@ describe("Photon AI routing boundary", () => {
     expect(mocks.markAlphaOnboardingReplied).toHaveBeenCalledWith("+13055550123", "space-1");
     expect(mocks.cancelNotificationFollowups).toHaveBeenCalledWith("user-1", "parent-1");
     expect(result.followupUserId).toBe("user-1");
+    expect(mocks.markOnboardingCompleted).not.toHaveBeenCalled();
+  });
+
+  it("serves a first search immediately and marks meaningful onboarding complete", async () => {
+    mocks.recognizeIMessageUser.mockResolvedValue({ user: { id: "user-1", city: null, name: null, imessage_address: "+13055550123" }, isNew: true });
+    const executeTool = vi.fn(async () => ({ name: "searchListings" as const, ok: true, data: { listings: [] } }));
+    await routePhotonMessage(inbound("looking for a ps5 under $300"), {
+      ...noHistory,
+      aiClient: client({ tools: [{ name: "searchListings", arguments: JSON.stringify({ query: "ps5", maxPriceCents: 30000, city: "Miami, FL" }) }], responseHint: "show results" }, { text: "nothing under $300 right now.", listings: [], closing: "" }),
+      executeTool,
+    });
+    expect(executeTool).toHaveBeenCalledWith({ name: "searchListings", arguments: { query: "ps5", maxPriceCents: 30000, city: "Miami, FL" } });
+    expect(mocks.markOnboardingCompleted).toHaveBeenCalledWith("user-1", "buy");
+  });
+
+  it("starts seller behavior immediately without requiring missing profile fields", async () => {
+    mocks.recognizeIMessageUser.mockResolvedValue({ user: { id: "user-1", city: null, name: null, imessage_address: "+13055550123" }, isNew: true });
+    const executeTool = vi.fn(async () => ({ name: "updateSellerDraft" as const, ok: true, data: { draft: { title: "Couch", photos: [] }, missingFields: ["priceCents"] } }));
+    await routePhotonMessage(inbound("i need to sell my couch"), {
+      ...noHistory,
+      aiClient: client({ tools: [{ name: "updateSellerDraft", arguments: JSON.stringify({ patch: { title: "Couch", category: "furniture" } }) }], responseHint: "ask the price" }, { text: "what price are you thinking?", listings: [], closing: "" }),
+      executeTool,
+    });
+    expect(executeTool).toHaveBeenCalledWith({ name: "updateSellerDraft", arguments: { patch: { title: "Couch", category: "furniture" } } });
+    expect(mocks.markOnboardingCompleted).toHaveBeenCalledWith("user-1", "sell");
   });
 
   it("fails closed when AI is unavailable", async () => {
@@ -60,6 +88,7 @@ describe("Photon AI routing boundary", () => {
     const result = await routePhotonMessage(inbound("text +13055550777 instead"));
     expect(result.relay?.identity).toBe("+13055550999"); expect(result.relay?.identity).not.toBe("+13055550777");
     expect(result.followupUserId).toBeUndefined();
+    expect(mocks.markOnboardingCompleted).toHaveBeenCalledWith("user-1", "existing_flow");
   });
 
   it("never makes an attachment-only response eligible for follow-ups", async () => {

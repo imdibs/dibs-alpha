@@ -25,10 +25,9 @@ export function postHogEventsForProductEvent(event: ProductEvent): PostHogEvent[
         { event: "onboarding_started", ...common, properties: { source: event.source, onboarding_method: "website" } },
       ];
     case "alpha_user_replied":
-      return [
-        { event: "first_message_received", ...common, properties: { channel: "imessage", message_kind: "onboarding_reply" } },
-        { event: "onboarding_completed", ...common, properties: { source: event.source, onboarding_method: "website" } },
-      ];
+      return [{ event: "first_message_received", ...common, properties: { channel: "imessage", message_kind: "onboarding_reply" } }];
+    case "onboarding_completed":
+      return [{ event: "onboarding_completed", ...common, properties: { source: event.source, onboarding_method: "imessage" } }];
     case "buyer_seller_conversation_started":
       return [{ event: "deal_started", ...common, properties: { channel: "marketplace" } }];
     default:

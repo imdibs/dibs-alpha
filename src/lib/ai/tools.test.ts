@@ -26,7 +26,7 @@ describe("actor-bound marketplace AI tools", () => {
       createListing: vi.fn(async (userId, input, id) => {
         published = { id: id!, seller_id: userId, title: input.title!, description: [input.age, input.functionality, input.defects, input.includedItems, input.packaging].join(" "), price_cents: input.priceCents!, condition: input.condition!, city: input.city!, image_urls: input.photos.map((photo: { url: string }) => photo.url), status: "draft", created_at: "now", public_token: "AbCdEf123456" };
         return { id: id! };
-      }), activateListing: vi.fn(async () => { if (published) published = { ...published, status: "active" }; }), updateListing: vi.fn(async () => undefined), deleteDraftPhotos: vi.fn(async () => undefined), recordEvent: vi.fn(async () => undefined),
+      }), activateListing: vi.fn(async () => { if (published) published = { ...published, status: "active" }; }), updateListing: vi.fn(async () => undefined), deleteDraftPhotos: vi.fn(async () => undefined), updateProfile: vi.fn(async () => undefined), recordEvent: vi.fn(async () => undefined),
     };
   });
 
@@ -90,6 +90,17 @@ describe("actor-bound marketplace AI tools", () => {
     const result = await execute({ name: "updateSellerDraft", arguments: { patch: { title: "Controller" }, userId: "attacker", recipientPhoneNumber: "+13055550999" } });
     expect(result.ok).toBe(false);
     expect(deps.saveSession).not.toHaveBeenCalled();
+  });
+
+  it("updates only explicit profile fields for the trusted actor", async () => {
+    const execute = createToolExecutor(trusted, deps);
+    expect(await execute({ name: "updateUserProfile", arguments: { name: "Sam", city: "Coral Gables" } })).toMatchObject({
+      ok: true, data: { saved: true, name: "Sam", city: "Coral Gables" },
+    });
+    expect(deps.updateProfile).toHaveBeenCalledWith("trusted-user", { name: "Sam", city: "Coral Gables" });
+
+    expect((await execute({ name: "updateUserProfile", arguments: { name: "Sam", userId: "attacker" } })).ok).toBe(false);
+    expect(deps.updateProfile).toHaveBeenCalledTimes(1);
   });
 
   it("publishes only a matching complete draft version and always uses the trusted actor", async () => {

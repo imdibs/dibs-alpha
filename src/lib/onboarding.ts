@@ -2,7 +2,7 @@ import { db } from "./db";
 import { recordProductEvent } from "./analytics";
 import { getMessagingSession, saveMessagingSession } from "./marketplace";
 
-export const ALPHA_FIRST_MESSAGE = "yo, i'm Dibs. i'm helping people buy and sell stuff around Miami. you looking to buy, sell, or just check it out?";
+export const ALPHA_FIRST_MESSAGE = "yo, i'm Dibs. i help people buy and sell around Miami. you looking for something, selling something, or just checking it out?";
 
 export type OnboardingMessageRequestState = "pending" | "preparing" | "sending" | "sent" | "failed";
 export type OnboardingMessageRequest = {
@@ -186,8 +186,17 @@ export async function markAlphaOnboardingReplied(phone: string, spaceId: string)
   const result = await db().from("alpha_onboardings").update({ state: "replied", replied_at: now, completed_at: now, photon_space_id: spaceId, failure_class: null })
     .eq("phone_e164", phone).in("state", ["sent", "sending"]).select("user_id,source,visitor_id,attribution_token,originating_listing_id").maybeSingle();
   if (result.error || !result.data) return;
-  await db().from("users").update({ activated_at: now }).eq("id", result.data.user_id).is("activated_at", null);
   const event = { userId: result.data.user_id, listingId: result.data.originating_listing_id, visitorId: result.data.visitor_id, attributionToken: result.data.attribution_token, source: result.data.source, metadata: { channel: "imessage" } };
   await recordProductEvent({ eventName: "alpha_user_replied", ...event }).catch(error => console.warn("Could not record onboarding reply", error));
-  await recordProductEvent({ eventName: "user_activated", ...event }).catch(error => console.warn("Could not record activation", error));
+}
+
+export async function markOnboardingCompleted(userId: string, direction: "buy" | "sell" | "browse" | "existing_flow"): Promise<void> {
+  const existing = await db().from("product_events").select("id")
+    .eq("user_id", userId).eq("event_name", "onboarding_completed").limit(1).maybeSingle();
+  if (existing.error) throw new Error("Could not check onboarding completion.");
+  if (existing.data) return;
+  await recordProductEvent({
+    eventName: "onboarding_completed", userId,
+    metadata: { channel: "imessage", onboarding_method: "imessage", direction },
+  });
 }

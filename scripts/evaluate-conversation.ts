@@ -74,7 +74,7 @@ async function executeTool(request: ToolRequest): Promise<ToolResult> {
 }
 
 async function turn(text: string) {
-  const context: AgentContext = { session, history: [...history], sellerDraft, recentListings, selectedListing };
+  const context: AgentContext = { name: null, city: null, session, history: [...history], sellerDraft, recentListings, selectedListing };
   const result = await runDibsAgent({ text, context, trusted }, { executeTool });
   history.push({ role: "user", body: text }, { role: "tool", body: JSON.stringify(result.toolResults) }, { role: "assistant", body: result.text });
   console.log(`\nuser: ${text}\ndibs: ${result.text}`);

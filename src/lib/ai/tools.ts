@@ -2,7 +2,7 @@ import { z } from "zod";
 import { searchListingsByIntent, type ListingSearchResult } from "../listing-search";
 import {
   activateOwnedDraftListing, activeListingsForSeller, createListingFromDraft, deleteSellerDraftPhotos, getMessagingSession,
-  listingForMessaging, saveMessagingSession, updateOwnedListing,
+  listingForMessaging, saveMessagingSession, updateIMessageUserProfile, updateOwnedListing,
 } from "../marketplace";
 import { listingDescription, missingDraftField, missingDraftFields, reviewDraft, type SellerDraft } from "../seller-listing";
 import { randomUUID } from "node:crypto";
@@ -37,12 +37,13 @@ export type ToolDependencies = {
   activateListing: typeof activateOwnedDraftListing;
   updateListing: typeof updateOwnedListing;
   deleteDraftPhotos: typeof deleteSellerDraftPhotos;
+  updateProfile: typeof updateIMessageUserProfile;
   recordEvent?: typeof recordProductEvent;
 };
 const defaults: ToolDependencies = {
   search: searchListingsByIntent, getSession: getMessagingSession, saveSession: saveMessagingSession,
   getListing: listingForMessaging, getOwned: activeListingsForSeller, createListing: createListingFromDraft, activateListing: activateOwnedDraftListing,
-  updateListing: updateOwnedListing, deleteDraftPhotos: deleteSellerDraftPhotos, recordEvent: recordProductEvent,
+  updateListing: updateOwnedListing, deleteDraftPhotos: deleteSellerDraftPhotos, updateProfile: updateIMessageUserProfile, recordEvent: recordProductEvent,
 };
 
 function publicListing(listing: Listing) {
@@ -73,6 +74,15 @@ export function createToolExecutor(context: TrustedToolContext, overrides: Parti
     try {
       let data: unknown;
       switch (request.name) {
+        case "updateUserProfile": {
+          const values = z.object({
+            name: z.string().trim().min(1).max(80).optional(),
+            city: z.string().trim().min(1).max(100).optional(),
+          }).strict().refine(value => value.name !== undefined || value.city !== undefined).parse(request.arguments);
+          await deps.updateProfile(context.userId, values);
+          data = { saved: true, ...values };
+          break;
+        }
         case "searchListings": {
           const args = z.object({ query: z.string().trim().min(2).max(120), maxPriceCents: z.number().int().positive().max(100_000_000).nullable().optional(), city: z.string().trim().min(2).max(100).nullable().optional() }).strict().parse(request.arguments);
           const result: ListingSearchResult = await deps.search({ query: args.query, maxPriceCents: args.maxPriceCents || undefined, city: args.city || context.defaultCity });

@@ -10,7 +10,7 @@ import {
 import { renderRelay, type InboundMessage, type OutboundMessage } from "./messaging";
 import { sanitizeOutboundMessage } from "./imessage-text";
 import type { Listing } from "./types";
-import { markAlphaOnboardingReplied } from "./onboarding";
+import { markAlphaOnboardingReplied, markOnboardingCompleted } from "./onboarding";
 import { cancelNotificationFollowups } from "./notifications/store";
 
 export type PhotonRouterDependencies = {
@@ -20,6 +20,7 @@ export type PhotonRouterDependencies = {
   loadHistory?: typeof loadAiHistory;
   appendHistory?: typeof appendAiTurn;
   markOnboardingReplied?: typeof markAlphaOnboardingReplied;
+  markOnboardingCompleted?: typeof markOnboardingCompleted;
   cancelFollowups?: typeof cancelNotificationFollowups;
 };
 export type PhotonRouterResult = {
@@ -28,6 +29,14 @@ export type PhotonRouterResult = {
   duplicate?: boolean;
   followupUserId?: string;
 };
+
+function meaningfulDirection(text: string, toolResults: ToolResult[]): "buy" | "sell" | "browse" | null {
+  const successfulTools = new Set(toolResults.filter(result => result.ok).map(result => result.name));
+  if (["updateSellerDraft", "getCurrentSellerDraft", "reviewSellerDraft", "publishListing", "getOwnedListings", "updateOwnedListingPrice", "markOwnedListingSold", "removeOwnedListing"].some(name => successfulTools.has(name as ToolRequest["name"]))) return "sell";
+  if (["searchListings", "getListing", "getRecentSearchResults", "getSelectedListing", "getActiveConversation", "getRecentConversationHistory"].some(name => successfulTools.has(name as ToolRequest["name"]))) return "buy";
+  if (/\b(?:just\s+)?(?:brows(?:e|ing)|check(?:ing)?\s+(?:it|things|stuff)\s+out|look(?:ing)?\s+around)\b/i.test(text)) return "browse";
+  return null;
+}
 
 async function loadListings(ids: string[]): Promise<Listing[]> {
   const rows = await Promise.all(ids.slice(0, 12).map(id => listingForMessaging(id)));
@@ -59,6 +68,8 @@ export async function routePhotonMessage(message: InboundMessage, options: Photo
         const participant = await persistParticipantMessage({ conversation, senderId: user.id, body: message.text, providerMessageId: message.messageId });
         const relayText = renderRelay(role, message.text, conversation.listing.title);
         await persistDibsMessage({ conversationId: conversation.id, body: relayText, kind: "dibs_outbound", inReplyToMessageId: participant.id });
+        await (options.markOnboardingCompleted || markOnboardingCompleted)(user.id, "existing_flow")
+          .catch(error => console.warn("Could not mark onboarding complete", error));
         await completePhotonEvent(message.messageId);
         return { relay: { identity: recipient.imessage_address, message: { text: relayText }, conversationId: conversation.id, sourceMessageId: participant.id } };
       }
@@ -78,10 +89,13 @@ export async function routePhotonMessage(message: InboundMessage, options: Photo
     await historyAppender(user.id, { role: "user", body: message.text || `[sent ${message.attachments.length} photo attachment(s)]` }, message.messageId);
     const recentListings = await loadListings((session?.recent_listing_ids || []).slice(0, 2));
     const selectedListing = session?.selected_listing_id ? await listingForMessaging(session.selected_listing_id) as Listing | null : null;
-    const context: AgentContext = { session, history, sellerDraft: session?.seller_draft || null, recentListings, selectedListing };
+    const context: AgentContext = { name: user.name, city: user.city, session, history, sellerDraft: session?.seller_draft || null, recentListings, selectedListing };
     const trusted = { userId: user.id, normalizedIdentity: identity, inboundMessageId: message.messageId, photonSpaceId: message.conversationId, defaultCity: options.defaultCity || user.city || "Miami, FL", currentMessageText: message.text };
     const executeTool = options.executeTool || createToolExecutor(trusted, options.toolDependencies);
     const result = await runDibsAgent({ text: message.text, context, trusted }, { client: options.aiClient, executeTool });
+    const direction = message.attachments.length ? "sell" : meaningfulDirection(message.text, result.toolResults);
+    if (direction) await (options.markOnboardingCompleted || markOnboardingCompleted)(user.id, direction)
+      .catch(error => console.warn("Could not mark onboarding complete", error));
     await historyAppender(user.id, { role: "tool", body: JSON.stringify(result.toolResults) });
     const introduction = recognized.isNew ? "yo, i'm Dibs, save this number so you can find me later." : "";
     const text = [introduction, result.text].filter(Boolean).join("\n\n");

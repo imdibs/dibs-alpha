@@ -65,6 +65,11 @@ export async function recognizeIMessageUser(identity: string): Promise<{ user: I
   throw new Error("Could not recognize this iMessage user.");
 }
 
+export async function updateIMessageUserProfile(userId: string, values: { name?: string; city?: string }): Promise<void> {
+  const result = await db().from("users").update(values).eq("id", userId);
+  if (result.error) throw new Error("Could not save that profile detail.");
+}
+
 export async function getMessagingSession(identity: string): Promise<MessagingSession | null> {
   const result = await db().from("messaging_sessions").select("*").eq("identity", identity).maybeSingle();
   if (result.error) throw new Error("Could not load messaging context.");

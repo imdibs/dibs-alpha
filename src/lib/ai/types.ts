@@ -22,6 +22,7 @@ export type TrustedToolContext = {
 };
 
 export const TOOL_NAMES = [
+  "updateUserProfile",
   "searchListings", "getListing", "getRecentSearchResults", "getSelectedListing",
   "getCurrentSellerDraft", "getOwnedListings", "getActiveConversation", "getRecentConversationHistory",
   "updateSellerDraft", "discardSellerDraft", "reviewSellerDraft", "publishListing",
@@ -32,6 +33,8 @@ export type ToolRequest = { name: ToolName; arguments: Record<string, unknown> }
 export type ToolResult = { name: ToolName; ok: boolean; data?: unknown; error?: string };
 export type AgentPlan = { tools: ToolRequest[]; responseHint: string };
 export type AgentContext = {
+  name: string | null;
+  city: string | null;
   session: MessagingSession | null;
   history: AiHistoryTurn[];
   sellerDraft: SellerDraft | null;
