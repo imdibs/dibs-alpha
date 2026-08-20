@@ -26,7 +26,7 @@ export type MarketplaceConnectionRepository = {
   reserveGroupCreation(conversationId: string, creationKey: string, buyerIdentity: string, sellerIdentity: string): Promise<boolean>;
   saveProviderGroup(conversationId: string, input: { providerSpaceId: string; providerLine: string }): Promise<void>;
   reserveIntroduction(conversationId: string): Promise<boolean>;
-  markConnected(conversationId: string, providerMessageId?: string): Promise<void>;
+  markConnected(conversationId: string, providerMessageId: string): Promise<void>;
   markReconciliationRequired(conversationId: string): Promise<void>;
 };
 
@@ -71,7 +71,7 @@ export const marketplaceConnectionRepository: MarketplaceConnectionRepository = 
   },
   async markConnected(conversationId, providerMessageId) {
     const result = await db().from("conversations").update({
-      connection_status: "connected", provider_introduction_message_id: providerMessageId || null,
+      connection_status: "connected", provider_introduction_message_id: providerMessageId,
       connected_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     }).eq("id", conversationId).eq("connection_status", "introduction_sending");
     if (result.error) throw new Error("Introduction delivery requires reconciliation before retrying.");
@@ -113,7 +113,11 @@ export async function connectBuyerToSeller(
     const reserved = await repository.reserveGroupCreation(conversation.id, creationKey, buyerIdentity, sellerIdentity);
     if (!reserved) throw new Error("Another connection attempt is already in progress.");
     try {
-      const group = await createDibsMarketplaceGroup({ buyerAddress: buyerIdentity, sellerAddress: sellerIdentity }, dependencies);
+      const group = await createDibsMarketplaceGroup({
+        buyerAddress: buyerIdentity,
+        sellerAddress: sellerIdentity,
+        displayName: `Dibs: ${displayListingTitle(conversation.listing.title)}`.slice(0, 80),
+      }, dependencies);
       await repository.saveProviderGroup(conversation.id, { providerSpaceId: group.providerSpaceId, providerLine: group.providerLine });
       conversation = { ...conversation, provider_space_id: group.providerSpaceId, provider_line: group.providerLine, provider_group_type: "group", connection_status: "group_created" };
     } catch (error) {
@@ -128,7 +132,8 @@ export async function connectBuyerToSeller(
   try {
     const space = await dependencies.provider.get(conversation.provider_space_id, { phone: conversation.provider_line });
     const sent = await space.send(introduction);
-    await repository.markConnected(conversation.id, sent?.id);
+    if (!sent?.id) throw new Error("Introduction delivery could not be verified.");
+    await repository.markConnected(conversation.id, sent.id);
   } catch (error) {
     await repository.markReconciliationRequired(conversation.id).catch(() => undefined);
     throw error;

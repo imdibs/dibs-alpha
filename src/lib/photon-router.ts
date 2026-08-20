@@ -51,22 +51,30 @@ export async function routePhotonMessage(message: InboundMessage, options: Photo
   if (!await claimInboundEvent(message.messageId, message.conversationId, identity, message.occurredAt)) return { duplicate: true };
   try {
     const group = await routeMarketplaceGroupMessage(message, options.groupRoutingRepository);
-    if (group.handled) {
+    if (group.handled && group.directText === undefined) {
       await completePhotonEvent(message.messageId);
       return {};
     }
+    const groupInvocation = group.directText !== undefined && group.conversation && group.senderId;
+    const currentText = groupInvocation ? group.directText! : message.text;
     const recognized = await recognizeIMessageUser(identity);
     if (!recognized) throw new Error("I couldn't recognize this iMessage account.");
     const user = recognized.user;
-    await (options.cancelFollowups || cancelNotificationFollowups)(user.id, message.messageId)
-      .catch(error => console.warn("Could not cancel notification follow-ups", error));
+    if (!groupInvocation) {
+      await (options.cancelFollowups || cancelNotificationFollowups)(user.id, message.messageId)
+        .catch(error => console.warn("Could not cancel notification follow-ups", error));
+    }
     await (options.markOnboardingReplied || markAlphaOnboardingReplied)(identity, message.conversationId)
       .catch(error => console.warn("Could not link onboarding reply", error));
     let session = await getMessagingSession(identity);
     await saveMessagingSession(identity, { user_id: user.id, photon_space_id: message.conversationId });
+    if (groupInvocation) {
+      await saveMessagingSession(identity, { selected_listing_id: group.conversation!.listing_id, active_conversation_id: group.conversation!.id, context_kind: "search" });
+      session = { ...(session || {}), selected_listing_id: group.conversation!.listing_id, active_conversation_id: group.conversation!.id, context_kind: "search" } as typeof session;
+    }
 
     // Phase 1 deliberately leaves the canonical, participant-authorized relay path unchanged.
-    if (session?.active_conversation_id && session.context_kind === "chats" && !message.attachments.length) {
+    if (!groupInvocation && session?.active_conversation_id && session.context_kind === "chats" && !message.attachments.length) {
       const conversation = await conversationDetails(session.active_conversation_id);
       if (conversation && [conversation.buyer_id, conversation.seller_id].includes(user.id)) {
         const role = conversation.buyer_id === user.id ? "buyer" : "seller";
@@ -93,18 +101,18 @@ export async function routePhotonMessage(message: InboundMessage, options: Photo
     const historyLoader = options.loadHistory || loadAiHistory;
     const historyAppender = options.appendHistory || appendAiTurn;
     const history = await historyLoader(user.id);
-    await historyAppender(user.id, { role: "user", body: message.text || `[sent ${message.attachments.length} photo attachment(s)]` }, message.messageId);
+    await historyAppender(user.id, { role: "user", body: currentText || `[sent ${message.attachments.length} photo attachment(s)]` }, message.messageId);
     const recentListings = await loadListings((session?.recent_listing_ids || []).slice(0, 2));
     const selectedListing = session?.selected_listing_id ? await listingForMessaging(session.selected_listing_id) as Listing | null : null;
     const context: AgentContext = { name: user.name, city: user.city, session, history, sellerDraft: session?.seller_draft || null, recentListings, selectedListing };
-    const trusted = { userId: user.id, normalizedIdentity: identity, inboundMessageId: message.messageId, photonSpaceId: message.conversationId, defaultCity: options.defaultCity || user.city || "Miami, FL", currentMessageText: message.text };
+    const trusted = { userId: user.id, normalizedIdentity: identity, inboundMessageId: message.messageId, photonSpaceId: message.conversationId, defaultCity: options.defaultCity || user.city || "Miami, FL", currentMessageText: currentText };
     const executeTool = options.executeTool || createToolExecutor(trusted, options.toolDependencies);
-    const result = await runDibsAgent({ text: message.text, context, trusted }, { client: options.aiClient, executeTool });
-    const direction = message.attachments.length ? "sell" : meaningfulDirection(message.text, result.toolResults);
+    const result = await runDibsAgent({ text: currentText, context, trusted }, { client: options.aiClient, executeTool });
+    const direction = message.attachments.length ? "sell" : meaningfulDirection(currentText, result.toolResults);
     if (direction) await (options.markOnboardingCompleted || markOnboardingCompleted)(user.id, direction)
       .catch(error => console.warn("Could not mark onboarding complete", error));
     await historyAppender(user.id, { role: "tool", body: JSON.stringify(result.toolResults) });
-    const introduction = recognized.isNew ? "yo, i'm Dibs, save this number so you can find me later." : "";
+    const introduction = recognized.isNew && !groupInvocation ? "yo, i'm Dibs, save this number so you can find me later." : "";
     const text = [introduction, result.text].filter(Boolean).join("\n\n");
     const parts = introduction
       ? [{ type: "text" as const, text: introduction }, ...(result.parts || [{ type: "text" as const, text: result.text }])]
@@ -112,7 +120,7 @@ export async function routePhotonMessage(message: InboundMessage, options: Photo
     const response = sanitizeOutboundMessage({ text, parts });
     await historyAppender(user.id, { role: "assistant", body: response.text });
     await completePhotonEvent(message.messageId);
-    return { response, followupUserId: message.text.trim() ? user.id : undefined };
+    return { response, followupUserId: !groupInvocation && currentText.trim() ? user.id : undefined };
   } catch (error) {
     const reason = error instanceof Error ? error.message : "Unknown error";
     await completePhotonEvent(message.messageId, reason);

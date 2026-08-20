@@ -79,9 +79,11 @@ export function createToolExecutor(context: TrustedToolContext, overrides: Parti
           const values = z.object({
             name: z.string().trim().min(1).max(80).optional(),
             city: z.string().trim().min(1).max(100).optional(),
-          }).strict().refine(value => value.name !== undefined || value.city !== undefined).parse(request.arguments);
-          await deps.updateProfile(context.userId, values);
-          data = { saved: true, ...values };
+            neighborhood: z.string().trim().min(1).max(100).optional(),
+          }).strict().refine(value => value.name !== undefined || value.city !== undefined || value.neighborhood !== undefined).parse(request.arguments);
+          const profile = { ...(values.name ? { name: values.name } : {}), ...(values.city || values.neighborhood ? { city: values.city || values.neighborhood } : {}) };
+          await deps.updateProfile(context.userId, profile);
+          data = { saved: true, ...values, ...profile };
           break;
         }
         case "searchListings": {
@@ -180,6 +182,9 @@ export function createToolExecutor(context: TrustedToolContext, overrides: Parti
           if (!verified) throw new Error("The publish could not be verified. Your draft is still saved; try again safely.");
           if (verified.status === "draft") {
             if (!listingMatchesDraft(verified, context.userId, session.seller_draft, "draft")) throw new Error("The publish could not be verified. Your draft is still saved; try again safely.");
+            if (!verified.public_token) throw new Error("The publish could not be verified. Your draft is still saved; try again safely.");
+            // Fail closed before activation if the public destination cannot be built.
+            publicListingUrl(verified.public_token);
             await deps.activateListing(context.userId, listingId);
             verified = await deps.getListing(listingId) as unknown as Listing | null;
           }

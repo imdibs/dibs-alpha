@@ -18,6 +18,11 @@ export type MarketplaceGroupRoutingRepository = {
   persistEvents(input: { conversation: GroupConversation; messageId: string; occurredAt: string; events: ReturnType<typeof deriveMarketplaceEvents> }): Promise<void>;
 };
 
+function directDibsRequest(text: string): string | null {
+  const match = text.trim().match(/^@?dibs(?:\s*[:,—-]\s*|\s+)(.*)$/i);
+  return match ? match[1].trim() : null;
+}
+
 export const marketplaceGroupRoutingRepository: MarketplaceGroupRoutingRepository = {
   async find(spaceId, providerLine) {
     const result = await db().from("conversations")
@@ -48,11 +53,12 @@ export const marketplaceGroupRoutingRepository: MarketplaceGroupRoutingRepositor
 export async function routeMarketplaceGroupMessage(
   message: InboundMessage,
   repository: MarketplaceGroupRoutingRepository = marketplaceGroupRoutingRepository,
-): Promise<{ handled: boolean; conversationId?: string }> {
+): Promise<{ handled: boolean; conversation?: GroupConversation; senderId?: string; directText?: string }> {
   if (!message.providerLine) return { handled: false };
   const conversation = await repository.find(message.conversationId, message.providerLine);
   if (!conversation) return { handled: false };
   const sender = normalizeIMessageIdentity(message.senderId);
+  if (sender === normalizeIMessageIdentity(message.providerLine)) return { handled: true };
   const buyer = normalizeIMessageIdentity(conversation.buyer_provider_identity);
   const seller = normalizeIMessageIdentity(conversation.seller_provider_identity);
   const senderId = sender === buyer ? conversation.buyer_id : sender === seller ? conversation.seller_id : null;
@@ -65,5 +71,6 @@ export async function routeMarketplaceGroupMessage(
     const events = deriveMarketplaceEvents(message.text, role, previousOffer);
     await repository.persistEvents({ conversation, messageId: persisted.id, occurredAt: message.occurredAt, events });
   }
-  return { handled: true, conversationId: conversation.id };
+  const directText = directDibsRequest(message.text);
+  return { handled: true, conversation, senderId, ...(directText !== null ? { directText } : {}) };
 }

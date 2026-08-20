@@ -18,10 +18,24 @@ function repository(): MarketplaceGroupRoutingRepository {
 describe("marketplace group inbound routing", () => {
   it("routes by exact space and owning line, validates participant, and persists semantic events", async () => {
     const repo = repository();
-    expect(await routeMarketplaceGroupMessage(message, repo)).toEqual({ handled: true, conversationId: "conversation-1" });
+    expect(await routeMarketplaceGroupMessage(message, repo)).toEqual({ handled: true, conversation, senderId: "buyer-1" });
     expect(repo.find).toHaveBeenCalledWith("group-1", "+13055550000");
     expect(repo.persistMessage).toHaveBeenCalledWith(expect.objectContaining({ senderId: "buyer-1", providerMessageId: "provider-1" }));
     expect(repo.persistEvents).toHaveBeenCalledWith(expect.objectContaining({ events: expect.arrayContaining([expect.objectContaining({ type: "offer_made", priceCents: 35000 })]) }));
+  });
+  it.each([
+    ["@Dibs, what was the price?", "what was the price?"],
+    ["Dibs can you help?", "can you help?"],
+  ])("recognizes strict leading direct address: %s", async (text, directText) => {
+    expect(await routeMarketplaceGroupMessage({ ...message, text }, repository())).toMatchObject({ handled: true, directText });
+  });
+  it.each(["what does Dibs think?", "undibs this", "Dibs"])("does not directly address Dibs for: %s", async text => {
+    expect(await routeMarketplaceGroupMessage({ ...message, text }, repository())).not.toHaveProperty("directText");
+  });
+  it("suppresses messages sent by the owning provider line", async () => {
+    const repo = repository();
+    expect(await routeMarketplaceGroupMessage({ ...message, senderId: "+13055550000" }, repo)).toEqual({ handled: true });
+    expect(repo.persistMessage).not.toHaveBeenCalled();
   });
   it("rejects senders not in the persisted buyer/seller identities", async () => {
     await expect(routeMarketplaceGroupMessage({ ...message, senderId: "+13055550999" }, repository())).rejects.toThrow("not a persisted participant");

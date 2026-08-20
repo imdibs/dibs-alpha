@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MessagingSession } from "../marketplace";
 import type { Listing } from "../types";
 import { createToolExecutor, type ToolDependencies } from "./tools";
@@ -14,10 +14,12 @@ const session = (overrides: Partial<MessagingSession> = {}): MessagingSession =>
 const owned: Listing = { id: "owned-1", seller_id: trusted.userId, title: "My PS5", description: "works", price_cents: 30000, condition: "good", city: "Miami", image_urls: ["one", "two", "three"], status: "active", created_at: "now" };
 
 describe("actor-bound marketplace AI tools", () => {
+  const originalSiteUrl = process.env.NEXT_PUBLIC_SITE_URL;
   let state: MessagingSession;
   let deps: ToolDependencies;
   let published: Listing | null;
   beforeEach(() => {
+    process.env.NEXT_PUBLIC_SITE_URL = "https://app.example.test";
     state = session();
     published = null;
     deps = {
@@ -29,6 +31,10 @@ describe("actor-bound marketplace AI tools", () => {
         return { id: id! };
       }), activateListing: vi.fn(async () => { if (published) published = { ...published, status: "active" }; }), updateListing: vi.fn(async () => undefined), deleteDraftPhotos: vi.fn(async () => undefined), updateProfile: vi.fn(async () => undefined), recordEvent: vi.fn(async () => undefined),
     };
+  });
+  afterAll(() => {
+    if (originalSiteUrl === undefined) delete process.env.NEXT_PUBLIC_SITE_URL;
+    else process.env.NEXT_PUBLIC_SITE_URL = originalSiteUrl;
   });
 
   it("patches all seller fields in one validated operation without bypassing review", async () => {
@@ -104,6 +110,12 @@ describe("actor-bound marketplace AI tools", () => {
     expect(deps.updateProfile).toHaveBeenCalledTimes(1);
   });
 
+  it("stores an explicit neighborhood in the existing profile location field", async () => {
+    const result = await createToolExecutor(trusted, deps)({ name: "updateUserProfile", arguments: { neighborhood: "Wynwood" } });
+    expect(result).toMatchObject({ ok: true, data: { saved: true, neighborhood: "Wynwood", city: "Wynwood" } });
+    expect(deps.updateProfile).toHaveBeenCalledWith("trusted-user", { city: "Wynwood" });
+  });
+
   it("publishes only a matching complete draft version and always uses the trusted actor", async () => {
     const execute = createToolExecutor(trusted, deps);
     state = session({ seller_draft: draft, seller_draft_version: 7, pending_listing_action: { type: "publish", draftVersion: 7, preparedByInboundMessageId: "review-message" } });
@@ -123,6 +135,17 @@ describe("actor-bound marketplace AI tools", () => {
     const result = await execute({ name: "publishListing", arguments: { expectedDraftVersion: 7 } });
     expect(result).toMatchObject({ ok: false, error: "Publishing needs a separate explicit confirmation." });
     expect(deps.createListing).not.toHaveBeenCalled();
+  });
+
+  it("leaves a verified listing in draft when the public origin is missing", async () => {
+    delete process.env.NEXT_PUBLIC_SITE_URL;
+    state = session({ seller_draft: draft, seller_draft_version: 7, pending_listing_action: { type: "publish", draftVersion: 7, listingId: "publish-id", preparedByInboundMessageId: "review-message" } });
+    published = { id: "publish-id", seller_id: trusted.userId, title: draft.title, description: listingDescription(draft), price_cents: draft.priceCents, condition: draft.condition, city: draft.city, image_urls: draft.photos.map(photo => photo.url), status: "draft", created_at: "now", public_token: "AbCdEf123456" };
+    const result = await createToolExecutor(trusted, deps)({ name: "publishListing", arguments: { expectedDraftVersion: 7 } });
+    expect(result).toMatchObject({ ok: false, error: expect.stringContaining("NEXT_PUBLIC_SITE_URL") });
+    expect(deps.activateListing).not.toHaveBeenCalled();
+    expect(published.status).toBe("draft");
+    expect(state.seller_draft).toEqual(draft);
   });
 
   it.each([

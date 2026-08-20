@@ -3,6 +3,7 @@ export type MarketplaceGroupSpace = {
   type: "dm" | "group";
   phone: string;
   send(text: string): Promise<{ id?: string; timestamp?: Date } | undefined>;
+  rename(displayName: string): Promise<void>;
 };
 
 export type MarketplaceGroupProvider = {
@@ -25,7 +26,7 @@ export class DedicatedIMessageLineRequiredError extends Error {
 }
 
 export async function createDibsMarketplaceGroup(
-  input: { buyerAddress: string; sellerAddress: string },
+  input: { buyerAddress: string; sellerAddress: string; displayName?: string },
   dependencies: { provider: MarketplaceGroupProvider; configuredLine?: string },
 ): Promise<MarketplaceGroup> {
   const line = dependencies.configuredLine?.trim();
@@ -33,5 +34,8 @@ export async function createDibsMarketplaceGroup(
   const participants: [string, string] = [input.buyerAddress, input.sellerAddress];
   const space = await dependencies.provider.create(participants, { phone: line });
   if (space.type !== "group" || space.phone !== line) throw new DedicatedIMessageLineRequiredError();
+  if (input.displayName) {
+    await space.rename(input.displayName).catch(error => console.warn("Could not rename marketplace group", error));
+  }
   return { providerSpaceId: space.id, providerLine: space.phone, groupType: "group", participants };
 }

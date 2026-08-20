@@ -15,20 +15,22 @@ describe("durable marketplace connection", () => {
   let current: MarketplaceConnection;
   let repository: MarketplaceConnectionRepository;
   let send: ReturnType<typeof vi.fn>;
+  let rename: ReturnType<typeof vi.fn>;
   let provider: { create: ReturnType<typeof vi.fn>; get: ReturnType<typeof vi.fn> };
   beforeEach(() => {
     current = connection();
     send = vi.fn(async () => ({ id: "intro-1" }));
+    rename = vi.fn(async () => undefined);
     provider = {
-      create: vi.fn(async () => ({ id: "group-1", type: "group" as const, phone: "+13055550000", send })),
-      get: vi.fn(async () => ({ id: "group-1", type: "group" as const, phone: "+13055550000", send })),
+      create: vi.fn(async () => ({ id: "group-1", type: "group" as const, phone: "+13055550000", send, rename })),
+      get: vi.fn(async () => ({ id: "group-1", type: "group" as const, phone: "+13055550000", send, rename })),
     };
     repository = {
       getOrCreate: vi.fn(async () => current),
       reserveGroupCreation: vi.fn(async (_id, key, buyer, seller) => { current = { ...current, connection_status: "group_creating", provider_creation_key: key, buyer_provider_identity: buyer, seller_provider_identity: seller }; return true; }),
       saveProviderGroup: vi.fn(async (_id, group) => { current = { ...current, connection_status: "group_created", provider_space_id: group.providerSpaceId, provider_line: group.providerLine, provider_group_type: "group" }; }),
       reserveIntroduction: vi.fn(async () => true),
-      markConnected: vi.fn(async () => { current = { ...current, connection_status: "connected" }; }),
+      markConnected: vi.fn(async (_id, providerMessageId) => { current = { ...current, connection_status: "connected", provider_introduction_message_id: providerMessageId }; }),
       markReconciliationRequired: vi.fn(async () => { current = { ...current, connection_status: "reconciliation_required" }; }),
     };
   });
@@ -36,15 +38,27 @@ describe("durable marketplace connection", () => {
   it("creates one group, sends one introduction, and persists delivery", async () => {
     const result = await connectBuyerToSeller({ buyerId: "buyer-1", selectedListingId: "listing-1" }, { repository, provider, configuredLine: "+13055550000" });
     expect(provider.create).toHaveBeenCalledTimes(1);
+    expect(rename).toHaveBeenCalledWith("Dibs: Road Bike");
     expect(send).toHaveBeenCalledWith(expect.stringContaining("Road Bike for $350"));
     expect(repository.markConnected).toHaveBeenCalledWith("conversation-1", "intro-1");
     expect(result).toMatchObject({ providerSpaceId: "group-1", reused: false });
   });
 
+  it("continues when the supported group rename fails", async () => {
+    rename.mockRejectedValueOnce(new Error("rename unavailable"));
+    await expect(connectBuyerToSeller({ buyerId: "buyer-1", selectedListingId: "listing-1" }, { repository, provider, configuredLine: "+13055550000" })).resolves.toMatchObject({ reused: false });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(repository.markConnected).toHaveBeenCalledWith("conversation-1", "intro-1");
+  });
+
   it("reuses an already connected group without creating or introducing again", async () => {
-    current = connection({ connection_status: "connected", provider_space_id: "group-1", provider_line: "+13055550000", provider_group_type: "group" });
-    const result = await connectBuyerToSeller({ buyerId: "buyer-1", selectedListingId: "listing-1" }, { repository, provider, configuredLine: "+13055550000" });
-    expect(result.reused).toBe(true); expect(provider.create).not.toHaveBeenCalled(); expect(send).not.toHaveBeenCalled();
+    const dependencies = { repository, provider, configuredLine: "+13055550000" };
+    await connectBuyerToSeller({ buyerId: "buyer-1", selectedListingId: "listing-1" }, dependencies);
+    const result = await connectBuyerToSeller({ buyerId: "buyer-1", selectedListingId: "listing-1" }, dependencies);
+    expect(result.reused).toBe(true);
+    expect(provider.create).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(current.provider_introduction_message_id).toBe("intro-1");
   });
 
   it("does not reuse a connected group from a previous provider line", async () => {
@@ -76,5 +90,12 @@ describe("durable marketplace connection", () => {
     expect(repository.markReconciliationRequired).toHaveBeenCalled();
     current = connection({ connection_status: "reconciliation_required" });
     await expect(connectBuyerToSeller({ buyerId: "buyer-1", selectedListingId: "listing-1" }, { repository, provider, configuredLine: "+13055550000" })).rejects.toThrow("reconciliation");
+  });
+
+  it("requires a provider message ID before marking the introduction connected", async () => {
+    send.mockResolvedValueOnce(undefined);
+    await expect(connectBuyerToSeller({ buyerId: "buyer-1", selectedListingId: "listing-1" }, { repository, provider, configuredLine: "+13055550000" })).rejects.toThrow("could not be verified");
+    expect(repository.markConnected).not.toHaveBeenCalled();
+    expect(repository.markReconciliationRequired).toHaveBeenCalledWith("conversation-1");
   });
 });

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { InboundMessage } from "./messaging";
 import type { MessagingSession } from "./marketplace";
 import type { AiClient } from "./ai/types";
+import type { MarketplaceGroupRoutingRepository } from "./marketplace-group-routing";
 
 const mocks = vi.hoisted(() => ({
   activateOwnedDraftListing: vi.fn(), activeListingsForSeller: vi.fn(), createListingFromDraft: vi.fn(), deleteSellerDraftPhotos: vi.fn(), updateOwnedListing: vi.fn(),
@@ -107,5 +108,33 @@ describe("Photon AI routing boundary", () => {
     const result = await routePhotonMessage(message, { ...noHistory, aiClient: client({ tools: [], responseHint: "acknowledge" }), executeTool: vi.fn() });
     expect(result.response).toBeDefined();
     expect(result.followupUserId).toBeUndefined();
+  });
+
+  it("replies only to a direct group address with the source listing and conversation pinned", async () => {
+    const groupRoutingRepository: MarketplaceGroupRoutingRepository = {
+      find: vi.fn(async () => ({
+        id: "conversation-1", listing_id: "listing-1", buyer_id: "user-1", seller_id: "seller-1",
+        provider_space_id: "space-1", provider_line: "+13055550000", buyer_provider_identity: "+13055550123",
+        seller_provider_identity: "+13055550999", connection_status: "connected",
+      })),
+      persistMessage: vi.fn(async () => ({ id: "participant-1" })),
+      previousOffer: vi.fn(async () => null),
+      persistEvents: vi.fn(async () => undefined),
+    };
+    mocks.listingForMessaging.mockResolvedValue({
+      id: "listing-1", seller_id: "seller-1", title: "Road Bike", description: "Fast bike", price_cents: 35000,
+      condition: "good", city: "Miami", image_urls: [], status: "active", created_at: "now",
+    });
+    const result = await routePhotonMessage(
+      { ...inbound("@Dibs, what was the asking price?"), providerLine: "+13055550000" },
+      { ...noHistory, groupRoutingRepository, aiClient: client({ tools: [], responseHint: "answer using selected listing" }, { text: "the asking price is $350.", listings: [], closing: "" }), executeTool: vi.fn() },
+    );
+    expect(result.response?.text).toBe("the asking price is $350.");
+    expect(result.followupUserId).toBeUndefined();
+    expect(mocks.cancelNotificationFollowups).not.toHaveBeenCalled();
+    expect(mocks.saveMessagingSession).toHaveBeenCalledWith("+13055550123", expect.objectContaining({
+      selected_listing_id: "listing-1", active_conversation_id: "conversation-1", context_kind: "search",
+    }));
+    expect(noHistory.appendHistory).toHaveBeenCalledWith("user-1", expect.objectContaining({ body: "what was the asking price?" }), "parent-1");
   });
 });
