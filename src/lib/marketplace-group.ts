@@ -32,6 +32,6 @@ export async function createDibsMarketplaceGroup(
   if (!line) throw new DedicatedIMessageLineRequiredError();
   const participants: [string, string] = [input.buyerAddress, input.sellerAddress];
   const space = await dependencies.provider.create(participants, { phone: line });
-  if (space.type !== "group") throw new DedicatedIMessageLineRequiredError();
+  if (space.type !== "group" || space.phone !== line) throw new DedicatedIMessageLineRequiredError();
   return { providerSpaceId: space.id, providerLine: space.phone, groupType: "group", participants };
 }

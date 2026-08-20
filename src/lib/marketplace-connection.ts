@@ -100,6 +100,9 @@ export async function connectBuyerToSeller(
   const sellerIdentity = conversation.seller.imessage_address;
   if (!buyerIdentity || !sellerIdentity) throw new Error("Both buyer and seller need verified iMessage identities.");
   if (conversation.connection_status === "connected" && conversation.provider_space_id && conversation.provider_line) {
+    if (conversation.provider_line !== dependencies.configuredLine?.trim()) {
+      throw new Error("The marketplace group belongs to a different provider line and requires reconciliation.");
+    }
     return { conversationId: conversation.id, providerSpaceId: conversation.provider_space_id, providerLine: conversation.provider_line, reused: true };
   }
   if (["group_creating", "introduction_sending", "reconciliation_required"].includes(conversation.connection_status)) {

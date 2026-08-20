@@ -28,4 +28,11 @@ describe("createDibsMarketplaceGroup", () => {
       { buyerAddress: "+13055550111", sellerAddress: "+13055550222" }, { provider, configuredLine: "+13055550000" },
     )).rejects.toBeInstanceOf(DedicatedIMessageLineRequiredError);
   });
+
+  it("rejects a provider response from a different line", async () => {
+    const provider = { create: vi.fn(async () => ({ id: "group", type: "group" as const, phone: "+13055559999", send: vi.fn() })), get: vi.fn() };
+    await expect(createDibsMarketplaceGroup(
+      { buyerAddress: "+13055550111", sellerAddress: "+13055550222" }, { provider, configuredLine: "+13055550000" },
+    )).rejects.toBeInstanceOf(DedicatedIMessageLineRequiredError);
+  });
 });

@@ -47,6 +47,16 @@ describe("durable marketplace connection", () => {
     expect(result.reused).toBe(true); expect(provider.create).not.toHaveBeenCalled(); expect(send).not.toHaveBeenCalled();
   });
 
+  it("does not reuse a connected group from a previous provider line", async () => {
+    current = connection({ connection_status: "connected", provider_space_id: "old-group", provider_line: "+13055559999", provider_group_type: "group" });
+    await expect(connectBuyerToSeller(
+      { buyerId: "buyer-1", selectedListingId: "listing-1" },
+      { repository, provider, configuredLine: "+13055550000" },
+    )).rejects.toThrow("different provider line");
+    expect(provider.create).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  });
+
   it("does not create when another attempt owns the reservation", async () => {
     vi.mocked(repository.reserveGroupCreation).mockResolvedValue(false);
     await expect(connectBuyerToSeller({ buyerId: "buyer-1", selectedListingId: "listing-1" }, { repository, provider, configuredLine: "+13055550000" })).rejects.toThrow("already in progress");

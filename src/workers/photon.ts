@@ -11,6 +11,7 @@ import { scheduleUnansweredFollowup } from "../lib/notifications/store";
 import { withNotificationDeliveryGate } from "../lib/notifications/delivery-gate";
 import { followupScheduleRequest } from "../lib/notifications/scheduling";
 import { connectBuyerToSeller } from "../lib/marketplace-connection";
+import { isConfiguredPhotonIMessageLine, requirePhotonIMessageLine } from "../lib/photon-line";
 
 function required(name: "PHOTON_PROJECT_ID" | "PHOTON_PROJECT_SECRET"): string {
   const value = process.env[name]?.trim();
@@ -67,6 +68,7 @@ function safeErrorDetails(error: unknown): Record<string, string> {
 
 async function main() {
   log("info", "worker_started");
+  const iMessageLine = requirePhotonIMessageLine();
   let app: Awaited<ReturnType<typeof Spectrum>>;
   try {
     app = await Spectrum({
@@ -115,11 +117,7 @@ async function main() {
     onboardingBusy = true;
     try {
       await processNextAlphaOnboarding({
-        resolveSpace: (identity, existingSpaceId) => existingSpaceId
-          ? iMessage.space.get(existingSpaceId)
-          : process.env.PHOTON_IMESSAGE_LINE
-            ? iMessage.space.create(identity, { phone: process.env.PHOTON_IMESSAGE_LINE })
-            : iMessage.space.create(identity),
+        resolveSpace: identity => iMessage.space.create(identity, { phone: iMessageLine }),
         recordSent: async (messageId, spaceId, identity) => recordOutboundEvent({ messageId, spaceId, identity, kind: "dibs_reply", occurredAt: new Date().toISOString() }),
       });
     } catch (error) {
@@ -138,7 +136,7 @@ async function main() {
     if (stopping || notificationBusy) return;
     notificationBusy = true;
     try {
-      await processNextNotificationOpportunity({ createSpace: spaceId => iMessage.space.get(spaceId) });
+      await processNextNotificationOpportunity({ createSpace: spaceId => iMessage.space.get(spaceId, { phone: iMessageLine }) });
     } catch (error) {
       log("error", "notification_processing_failed", safeErrorDetails(error));
     } finally {
@@ -174,13 +172,17 @@ async function main() {
     try {
       const inbound = parsePhotonInbound(space, message);
       if (!inbound || stopping) return;
+      if (!isConfiguredPhotonIMessageLine(inbound.providerLine, iMessageLine)) {
+        log("warn", "inbound_message_wrong_line_ignored");
+        return;
+      }
       log("info", "inbound_message_received");
       await withNotificationDeliveryGate(inbound.conversationId, () => space.responding(async () => {
         const result = await routePhotonMessage(inbound, {
           defaultCity: process.env.PHOTON_DEFAULT_CITY || "Miami, FL",
           toolDependencies: {
             connectMarketplace: trusted => connectBuyerToSeller(trusted, {
-              configuredLine: process.env.PHOTON_IMESSAGE_LINE,
+              configuredLine: iMessageLine,
               provider: {
                 create: (addresses, options) => iMessage.space.create(addresses, options),
                 get: (id, options) => iMessage.space.get(id, options),
@@ -201,9 +203,7 @@ async function main() {
           }
         }
         if (result.relay) {
-          const relaySpace = process.env.PHOTON_IMESSAGE_LINE
-            ? await iMessage.space.create(result.relay.identity, { phone: process.env.PHOTON_IMESSAGE_LINE })
-            : await iMessage.space.create(result.relay.identity);
+          const relaySpace = await iMessage.space.create(result.relay.identity, { phone: iMessageLine });
           await sendOutput(relaySpace, result.relay.identity, result.relay.message, "dibs_relay");
         }
       }));
