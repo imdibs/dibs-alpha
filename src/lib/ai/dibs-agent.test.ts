@@ -15,6 +15,9 @@ function fakeClient(plan: { tools: Array<{ name: string; arguments: Record<strin
   const replies = [JSON.stringify({ tools: plan.tools.map(tool => ({ name: tool.name, arguments: JSON.stringify(tool.arguments) })), responseHint: plan.responseHint || "respond naturally" }), typeof final === "string" ? final : JSON.stringify(final)];
   return { complete: vi.fn(async () => replies.shift()!) };
 }
+const context = (overrides: Partial<AgentContext> = {}): AgentContext => ({
+  name: null, city: null, session: session(), history: [], sellerDraft: null, recentListings: [], selectedListing: null, ...overrides,
+});
 
 type Fixture = { text: string; tool?: ToolRequest; pending?: MessagingSession["pending_listing_action"] };
 const fixtures: Fixture[] = [
@@ -288,5 +291,81 @@ describe("offline Dibs transcript planning contracts", () => {
       { client: fakeClient({ tools: [{ name: "searchListings", arguments: { query: "ps5", maxPriceCents: 40000, city: "Miami" } }] }, { text: "i couldn't find a fit right now. want to try a nearby city?", listings: [], closing: "" }), executeTool: constrainedExecute },
     );
     expect(constrainedExecute).toHaveBeenCalledWith({ name: "searchListings", arguments: { query: "ps5", maxPriceCents: 40000, city: "Miami" } });
+  });
+});
+
+describe("dry and low-information conversation turns", () => {
+  const cases = [
+    ["cool", "nice. you looking for anything right now?"],
+    ["ok", "you trying to buy, sell, or just look around?"],
+    ["thanks", "for sure. hit me when you need me."],
+    ["haha", "what are you getting into?"],
+    ["lol", "what's up with you?"],
+    ["nice", "you looking for something or selling?"],
+    ["yeah", "want me to pull up a few options?"],
+    ["no", "all good. want to look at something else?"],
+    ["idk", "you more in the mood to browse or sell something?"],
+    ["just seeing", "want to see what's around Miami?"],
+    ["maybe", "what part are you unsure about?"],
+    ["nothing", "all good. hit me if something comes up."],
+    ["what's up", "not much. you looking for anything?"],
+  ] as const;
+
+  it.each(cases)("keeps '%s' useful without hardcoded routing", async (text, reply) => {
+    const aiClient = fakeClient(
+      { tools: [], responseHint: "State: CASUAL or AMBIGUOUS. Continue naturally with one useful next step, or end cleanly when appropriate." },
+      { text: reply, listings: [], closing: "" },
+    );
+    const execute = vi.fn();
+
+    const result = await runDibsAgent({ text, trusted, context: context() }, { client: aiClient, executeTool: execute });
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(result.text).toBe(reply);
+    expect(result.text.match(/\?/g)?.length || 0).toBeLessThanOrEqual(1);
+    const calls = vi.mocked(aiClient.complete).mock.calls;
+    expect(calls[0][0][0].content).toContain("CONVERSATION STATE");
+    expect(calls[0][0][0].content).toContain("context-dependent");
+    expect(calls[1][0][1].content).toContain("never use empty acknowledgement filler");
+    expect(calls[1][0][1].content).toContain("Generally ask at most one useful question");
+  });
+
+  it("continues a known buy request without asking for known product, budget, or city", async () => {
+    const aiClient = fakeClient(
+      { tools: [], responseHint: "State: FOLLOW_UP/BUY. Known request: PS5 under $300 in Miami. Offer to find options; do not ask for product, budget, or city." },
+      { text: "want me to find you a few PS5 options under $300?", listings: [], closing: "" },
+    );
+    const currentContext = context({
+      city: "Miami",
+      history: [
+        { role: "user", body: "i need a PS5 under $300 in Miami" },
+        { role: "assistant", body: "i can find a few that fit." },
+      ],
+    });
+
+    const result = await runDibsAgent({ text: "cool", trusted, context: currentContext }, { client: aiClient, executeTool: vi.fn() });
+
+    expect(result.text).toBe("want me to find you a few PS5 options under $300?");
+    const planningMessages = vi.mocked(aiClient.complete).mock.calls[0][0];
+    expect(planningMessages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: "user", content: "i need a PS5 under $300 in Miami" }),
+      expect.objectContaining({ role: "assistant", content: "i can find a few that fit." }),
+    ]));
+    expect(planningMessages.at(-1)?.content).toContain('"city":"Miami"');
+  });
+
+  it("allows a done conversation to end without manufacturing another question", async () => {
+    const result = await runDibsAgent(
+      { text: "thanks", trusted, context: context({ history: [{ role: "assistant", body: "sent you the details." }] }) },
+      {
+        client: fakeClient(
+          { tools: [], responseHint: "State: DONE. The requested details were delivered. End briefly without a question." },
+          { text: "for sure. hit me if you need anything later.", listings: [], closing: "" },
+        ),
+        executeTool: vi.fn(),
+      },
+    );
+
+    expect(result.text).not.toContain("?");
   });
 });

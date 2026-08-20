@@ -43,6 +43,16 @@ describe("Photon AI routing boundary", () => {
     expect(mocks.markOnboardingCompleted).not.toHaveBeenCalled();
   });
 
+  it.each(["cool", "ok", "thanks", "haha", "lol", "nice", "yeah", "no", "idk", "maybe", "nothing", "what's up"])("does not treat '%s' as semantic onboarding completion", async text => {
+    await routePhotonMessage(inbound(text), {
+      ...noHistory,
+      aiClient: client({ tools: [], responseHint: "casual or ambiguous; respond naturally" }, { text: "what are you getting into?", listings: [], closing: "" }),
+      executeTool: vi.fn(),
+    });
+
+    expect(mocks.markOnboardingCompleted).not.toHaveBeenCalled();
+  });
+
   it("serves a first search immediately and marks meaningful onboarding complete", async () => {
     mocks.recognizeIMessageUser.mockResolvedValue({ user: { id: "user-1", city: null, name: null, imessage_address: "+13055550123" }, isNew: true });
     const executeTool = vi.fn(async () => ({ name: "searchListings" as const, ok: true, data: { listings: [] } }));
