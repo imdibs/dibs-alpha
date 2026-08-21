@@ -125,7 +125,43 @@ describe("actor-bound marketplace AI tools", () => {
     expect(publishResult, JSON.stringify(publishResult)).toMatchObject({ ok: true });
     expect(deps.createListing).toHaveBeenCalledWith("trusted-user", draft, expect.any(String));
     expect(state.seller_draft).toBeNull();
+    expect(state.pending_listing_action).toEqual({ type: "share", listingId: published?.id });
+  });
+
+  it("publishes without generating a link and leaves share consent pending", async () => {
+    state = session({ seller_draft: draft, seller_draft_version: 7, pending_listing_action: { type: "publish", draftVersion: 7, preparedByInboundMessageId: "review-message" } });
+    const result = await createToolExecutor(trusted, deps)({ name: "publishListing", arguments: { expectedDraftVersion: 7 } });
+    expect(result).toMatchObject({ ok: true, data: { published: true, verified: true } });
+    expect(result.data).not.toHaveProperty("shareUrl");
+    expect(state.pending_listing_action).toEqual({ type: "share", listingId: published?.id });
+    expect(deps.recordEvent).not.toHaveBeenCalledWith(expect.objectContaining({ eventName: "listing_share_link_generated" }));
+  });
+
+  it.each(["yes", "yeah send it", "yeah send me the link", "send it to my friend"])("generates the active owned listing link after '%s'", async currentMessageText => {
+    published = { ...owned, id: "publish-id", public_token: "AbCdEf123456" };
+    state = session({ pending_listing_action: { type: "share", listingId: published.id } });
+    const result = await createToolExecutor({ ...trusted, currentMessageText }, deps)({ name: "sendListingShareLink", arguments: {} });
+    expect(result).toMatchObject({ ok: true, data: { sent: true, shareUrl: "https://app.example.test/l/AbCdEf123456" } });
     expect(state.pending_listing_action).toBeNull();
+    expect(deps.recordEvent).toHaveBeenCalledWith(expect.objectContaining({ eventName: "listing_share_link_generated", listingId: "publish-id" }));
+  });
+
+  it("declines a pending share without generating a link", async () => {
+    state = session({ pending_listing_action: { type: "share", listingId: "publish-id" } });
+    const result = await createToolExecutor(trusted, deps)({ name: "declineListingShareLink", arguments: {} });
+    expect(result).toMatchObject({ ok: true, data: { declined: true } });
+    expect(state.pending_listing_action).toBeNull();
+    expect(deps.getListing).not.toHaveBeenCalledWith("publish-id");
+    expect(deps.recordEvent).not.toHaveBeenCalledWith(expect.objectContaining({ eventName: "listing_share_link_generated" }));
+  });
+
+  it("does not generate a link without an explicit affirmative message", async () => {
+    published = { ...owned, id: "publish-id", public_token: "AbCdEf123456" };
+    state = session({ pending_listing_action: { type: "share", listingId: published.id } });
+    const result = await createToolExecutor({ ...trusted, currentMessageText: "what's the weather?" }, deps)({ name: "sendListingShareLink", arguments: {} });
+    expect(result).toMatchObject({ ok: false, error: expect.stringContaining("explicit confirmation") });
+    expect(state.pending_listing_action).toEqual({ type: "share", listingId: "publish-id" });
+    expect(deps.recordEvent).not.toHaveBeenCalledWith(expect.objectContaining({ eventName: "listing_share_link_generated" }));
   });
 
   it("rejects publishing in the same inbound turn as the review", async () => {

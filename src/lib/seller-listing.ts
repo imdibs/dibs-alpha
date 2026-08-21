@@ -23,6 +23,7 @@ export type SellerDraft = {
 
 export type PendingListingAction =
   | { type: "publish"; draftVersion?: number; listingId?: string; preparedByInboundMessageId?: string }
+  | { type: "share"; listingId: string }
   | { type: "remove"; listingId: string; title: string; preparedByInboundMessageId?: string }
   | { type: "sold"; listingId: string; title: string; preparedByInboundMessageId?: string }
   | { type: "price"; listingId: string; title: string; priceCents: number; preparedByInboundMessageId?: string };
@@ -41,6 +42,14 @@ export function wantsCancel(text: string): boolean {
 
 export function isConfirmation(text: string): boolean {
   return /^\s*(?:yeah|yep|yes|yup|do it|post it|looks good|put it up|go ahead|sure|mark it sold|remove it)\s*[.!]?\s*$/i.test(text);
+}
+
+export function isShareConfirmation(text: string): boolean {
+  return /^\s*(?:yes|yeah|yep|yup|sure|please|(?:(?:yes|yeah|yep|yup|sure),?\s+)?(?:send it(?:\s+to\s+my\s+friend)?|send (?:me )?(?:the )?link))\s*[.!]?\s*$/i.test(text);
+}
+
+export function isShareDecline(text: string): boolean {
+  return /^\s*(?:no|nope|nah|no thanks|not now|i'm good|im good)\s*[.!]?\s*$/i.test(text);
 }
 
 export function parsePrice(text: string, allowBare = false): number | undefined {

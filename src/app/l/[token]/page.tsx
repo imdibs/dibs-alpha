@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import React from "react";
 import { notFound } from "next/navigation";
 import { currentUser } from "@/lib/auth";
 import { getPublicListing, publicListingUrl } from "@/lib/public-listings";
@@ -21,16 +22,14 @@ export default async function PublicListingPage({ params }: Props) {
   const listing = await getPublicListing((await params).token);
   if (!listing) notFound();
   const user = await currentUser();
-  const active = listing.status === "active";
   return <article className="public-listing">
     <div className="listing-gallery">{listing.image_urls.map((url, index) => <img src={url} alt={`${listing.title}, photo ${index + 1}`} key={url}/>)}</div>
     <div className="listing-details">
-      {!active&&<div className="notice">This listing is no longer active.</div>}
       <p className="meta">{condition(listing.condition)} · {listing.city}</p>
       <h1>{listing.title}</h1>
       <div className="price">{money(listing.price_cents)}</div>
       <p>{listing.description}</p>
-      <PublicListingActions token={listing.public_token!} title={listing.title} active={active} authenticated={Boolean(user)}/>
+      <PublicListingActions token={listing.public_token!} title={listing.title} active authenticated={Boolean(user)}/>
     </div>
   </article>;
 }

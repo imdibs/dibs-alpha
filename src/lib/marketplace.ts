@@ -223,10 +223,10 @@ export async function conversationDetails(id: string) {
   }) | null;
 }
 
-export async function listingForMessaging(id: string) {
+export async function listingForMessaging(id: string): Promise<Listing | null> {
   const result = await db().from("listings").select("*,seller:users!seller_id(id,name,imessage_address)").eq("id", id).maybeSingle();
   if (result.error) throw new Error("Could not load listing.");
-  return result.data as { id: string; seller_id: string; title: string; image_urls: string[]; status: string; seller: { id: string; name: string; imessage_address: string | null } } | null;
+  return result.data as unknown as Listing | null;
 }
 
 export async function conversationsForUser(userId: string) {

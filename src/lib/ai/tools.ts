@@ -8,7 +8,7 @@ import { listingDescription, missingDraftField, missingDraftFields, reviewDraft,
 import { randomUUID } from "node:crypto";
 import type { Listing } from "../types";
 import { displayListingTitle } from "../messaging";
-import { isConfirmation } from "../seller-listing";
+import { isConfirmation, isShareConfirmation } from "../seller-listing";
 import { publicListingUrl } from "../public-listings";
 import { recordProductEvent } from "../analytics";
 import type { ToolName, ToolRequest, ToolResult, TrustedToolContext } from "./types";
@@ -190,11 +190,29 @@ export function createToolExecutor(context: TrustedToolContext, overrides: Parti
           }
           if (!verified || !listingMatchesDraft(verified, context.userId, session.seller_draft, "active")) throw new Error("The publish could not be verified. Your draft is still saved; try again safely.");
           if (!verified.public_token) throw new Error("The publish could not be verified. Your draft is still saved; try again safely.");
-          const shareUrl = publicListingUrl(verified.public_token);
-          await deps.saveSession(context.normalizedIdentity, { seller_draft: null, pending_listing_action: null, selected_listing_id: listingId, context_kind: "search" });
+          await deps.saveSession(context.normalizedIdentity, { seller_draft: null, pending_listing_action: { type: "share", listingId }, selected_listing_id: listingId, context_kind: "search" });
           await deps.recordEvent?.({ eventName: "listing_published", userId: context.userId, listingId, metadata: { verified: true } }).catch(error => console.warn("Could not record publish event", error));
-          await deps.recordEvent?.({ eventName: "listing_share_link_generated", userId: context.userId, listingId, metadata: { channel: "imessage_publish" } }).catch(error => console.warn("Could not record share event", error));
-          data = { published: true, verified: true, title: displayListingTitle(verified.title), priceCents: verified.price_cents, city: verified.city, shareUrl }; break;
+          data = { published: true, verified: true, title: displayListingTitle(verified.title), priceCents: verified.price_cents, city: verified.city }; break;
+        }
+        case "sendListingShareLink": {
+          empty.parse(request.arguments);
+          if (!isShareConfirmation(context.currentMessageText || "")) throw new Error("Sending the share link needs explicit confirmation.");
+          const session = await deps.getSession(context.normalizedIdentity);
+          const pending = session?.pending_listing_action;
+          if (pending?.type !== "share") throw new Error("There isn't a listing waiting to be shared.");
+          const listing = await deps.getListing(pending.listingId);
+          if (!listing || listing.seller_id !== context.userId || listing.status !== "active" || !listing.public_token) throw new Error("That listing is not available to share.");
+          const shareUrl = publicListingUrl(listing.public_token);
+          await deps.saveSession(context.normalizedIdentity, { pending_listing_action: null });
+          await deps.recordEvent?.({ eventName: "listing_share_link_generated", userId: context.userId, listingId: listing.id, metadata: { channel: "imessage_consent" } }).catch(error => console.warn("Could not record share event", error));
+          data = { sent: true, shareUrl, title: displayListingTitle(listing.title) }; break;
+        }
+        case "declineListingShareLink": {
+          empty.parse(request.arguments);
+          const session = await deps.getSession(context.normalizedIdentity);
+          if (session?.pending_listing_action?.type !== "share") throw new Error("There isn't a listing waiting to be shared.");
+          await deps.saveSession(context.normalizedIdentity, { pending_listing_action: null });
+          data = { declined: true }; break;
         }
         case "updateOwnedListingPrice": case "markOwnedListingSold": case "removeOwnedListing": {
           const args = z.object({ listingNumber: z.number().int().min(1).max(20), priceCents: z.number().int().positive().max(100_000_000).optional(), confirm: z.boolean().optional() }).strict().parse(request.arguments);

@@ -25,7 +25,7 @@ export const TOOL_NAMES = [
   "updateUserProfile",
   "searchListings", "getListing", "getRecentSearchResults", "getSelectedListing",
   "getCurrentSellerDraft", "getOwnedListings", "getActiveConversation", "getRecentConversationHistory",
-  "updateSellerDraft", "discardSellerDraft", "reviewSellerDraft", "publishListing",
+  "updateSellerDraft", "discardSellerDraft", "reviewSellerDraft", "publishListing", "sendListingShareLink", "declineListingShareLink",
   "updateOwnedListingPrice", "markOwnedListingSold", "removeOwnedListing",
   "connectBuyerToSeller",
 ] as const;

@@ -29,7 +29,7 @@ export async function getPublicListing(token: string): Promise<PublicListing | n
   const result = await db().from("listings")
     .select("id,seller_id,title,description,price_cents,condition,city,image_urls,status,public_token,category,published_at,updated_at,sold_at")
     .eq("public_token", parsed.data)
-    .in("status", ["active", "sold"])
+    .eq("status", "active")
     .maybeSingle();
   if (result.error) throw new Error("Could not load public listing.");
   return result.data as PublicListing | null;

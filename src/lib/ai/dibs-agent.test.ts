@@ -96,14 +96,40 @@ describe("offline Dibs transcript planning contracts", () => {
   it("only confirms a publish after authoritative verification", async () => {
     const execute = vi.fn(async (): Promise<ToolResult> => ({ name: "publishListing", ok: true, data: { published: true, verified: true } }));
     const result = await runDibsAgent({ text: "put it up", trusted, context: { name: null, city: null, session: session({ pending_listing_action: { type: "publish", draftVersion: 3 }, seller_draft_version: 3 }), history: [], sellerDraft: null, recentListings: [], selectedListing: null } }, { client: fakeClient({ tools: [{ name: "publishListing", arguments: { expectedDraftVersion: 3 } }] }, { text: "it's live", listings: [], closing: "" }), executeTool: execute });
-    expect(result.text).toBe("it's live");
+    expect(result.text).toBe("your listing is live. want the share link?");
   });
 
-  it("renders only the authoritative share URL after verified publication", async () => {
-    const execute = vi.fn(async (): Promise<ToolResult> => ({ name: "publishListing", ok: true, data: { published: true, verified: true, title: "PS5 Slim", priceCents: 28000, city: "Wynwood", shareUrl: "https://staging.example.test/l/7xK92pAb_Cde" } }));
+  it("asks for share consent after verified publication without sending a link", async () => {
+    const execute = vi.fn(async (): Promise<ToolResult> => ({ name: "publishListing", ok: true, data: { published: true, verified: true, title: "PS5 Slim", priceCents: 28000, city: "Wynwood" } }));
     const result = await runDibsAgent({ text: "post it", trusted, context: { name: null, city: null, session: session({ pending_listing_action: { type: "publish", draftVersion: 3 }, seller_draft_version: 3 }), history: [], sellerDraft: null, recentListings: [], selectedListing: null } }, { client: fakeClient({ tools: [{ name: "publishListing", arguments: { expectedDraftVersion: 3 } }] }, { text: "made up https://evil.test", listings: [], closing: "" }), executeTool: execute });
-    expect(result.text).toBe("your PS5 Slim is live for $280 in Wynwood.\n\nshare it: https://staging.example.test/l/7xK92pAb_Cde");
+    expect(result.text).toBe("your PS5 Slim is live for $280. want the share link?");
     expect(result.text).not.toContain("evil.test");
+    expect(result.text).not.toContain("/l/");
+  });
+
+  it.each(["yes", "yeah send it", "yeah send me the link", "send it to my friend"])("sends the authoritative share URL after '%s'", async text => {
+    const execute = vi.fn(async (): Promise<ToolResult> => ({ name: "sendListingShareLink", ok: true, data: { sent: true, shareUrl: "https://app.example.test/l/7xK92pAb_Cde" } }));
+    const result = await runDibsAgent({ text, trusted, context: context({ session: session({ pending_listing_action: { type: "share", listingId: "listing-1" } }) }) }, { client: fakeClient({ tools: [] }), executeTool: execute });
+    expect(execute).toHaveBeenCalledWith({ name: "sendListingShareLink", arguments: {} });
+    expect(result.text).toBe("https://app.example.test/l/7xK92pAb_Cde");
+  });
+
+  it("does not send a link after 'no'", async () => {
+    const execute = vi.fn(async (): Promise<ToolResult> => ({ name: "declineListingShareLink", ok: true, data: { declined: true } }));
+    const result = await runDibsAgent({ text: "no", trusted, context: context({ session: session({ pending_listing_action: { type: "share", listingId: "listing-1" } }) }) }, { client: fakeClient({ tools: [] }), executeTool: execute });
+    expect(execute).toHaveBeenCalledWith({ name: "declineListingShareLink", arguments: {} });
+    expect(result.text).toBe("all good.");
+  });
+
+  it("keeps pending share context without asking again for an unrelated message", async () => {
+    const execute = vi.fn();
+    const result = await runDibsAgent(
+      { text: "what's the weather like?", trusted, context: context({ session: session({ pending_listing_action: { type: "share", listingId: "listing-1" } }) }) },
+      { client: fakeClient({ tools: [{ name: "sendListingShareLink", arguments: {} }] }, { text: "looks sunny today.", listings: [], closing: "" }), executeTool: execute },
+    );
+    expect(execute).not.toHaveBeenCalled();
+    expect(result.text).toBe("looks sunny today.");
+    expect(result.text).not.toContain("link?");
   });
 
   it.each([
