@@ -31,7 +31,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const counterpart = matchingCounterpartyReport(refreshed.data || [], user.id, priceCents);
   if (!counterpart) return NextResponse.json(signal.data);
 
-  const deal = await client.from("deals").upsert({ conversation_id: id, listing_id: c.listing_id, buyer_id: c.buyer_id, seller_id: c.seller_id, agreed_price_cents: priceCents }, { onConflict: "conversation_id", ignoreDuplicates: true }).select("id").maybeSingle();
+  const deal = await client.from("deals").upsert({ conversation_id: id, listing_id: c.listing_id, buyer_id: c.buyer_id, seller_id: c.seller_id, agreed_price_cents: priceCents, source: "participant_bilateral_reports", confidence: 1 }, { onConflict: "conversation_id", ignoreDuplicates: true }).select("id").maybeSingle();
   if (deal.error) return NextResponse.json({ error: "Your report was saved, but confirmation could not be completed." }, { status: 500 });
   const confirmed = await client.from("deal_signals").insert({
     conversation_id: id, listing_id: c.listing_id, buyer_id: c.buyer_id, seller_id: c.seller_id,

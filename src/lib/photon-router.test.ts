@@ -120,6 +120,7 @@ describe("Photon AI routing boundary", () => {
       persistMessage: vi.fn(async () => ({ id: "participant-1" })),
       previousOffer: vi.fn(async () => null),
       persistEvents: vi.fn(async () => undefined),
+      confirmDeal: vi.fn(async () => undefined),
     };
     mocks.listingForMessaging.mockResolvedValue({
       id: "listing-1", seller_id: "seller-1", title: "Road Bike", description: "Fast bike", price_cents: 35000,

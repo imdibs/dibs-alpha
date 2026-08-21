@@ -11,7 +11,7 @@ const message = { messageId: "provider-1", conversationId: "group-1", providerLi
 function repository(): MarketplaceGroupRoutingRepository {
   return {
     find: vi.fn(async () => conversation), persistMessage: vi.fn(async () => ({ id: "message-1" })),
-    previousOffer: vi.fn(async () => null), persistEvents: vi.fn(async () => undefined),
+    previousOffer: vi.fn(async () => null), persistEvents: vi.fn(async () => undefined), confirmDeal: vi.fn(async () => undefined),
   };
 }
 
@@ -22,6 +22,31 @@ describe("marketplace group inbound routing", () => {
     expect(repo.find).toHaveBeenCalledWith("group-1", "+13055550000");
     expect(repo.persistMessage).toHaveBeenCalledWith(expect.objectContaining({ senderId: "buyer-1", providerMessageId: "provider-1" }));
     expect(repo.persistEvents).toHaveBeenCalledWith(expect.objectContaining({ events: expect.arrayContaining([expect.objectContaining({ type: "offer_made", priceCents: 35000 })]) }));
+  });
+  it("creates exactly one canonical deal for the production-regression agreement", async () => {
+    const repo = repository();
+    const productionConversationId = "53a91bbc-5b39-4ec9-9f34-ac5c1cf3718f";
+    const productionListingId = "8132e453-b3c5-4aa2-8e69-6fdb80a42cc4";
+    const fixture = { ...conversation, id: productionConversationId, listing_id: productionListingId };
+    vi.mocked(repo.find).mockResolvedValue(fixture);
+    vi.mocked(repo.previousOffer).mockResolvedValue({ role: "buyer", priceCents: 3500, sourceMessageId: "offer-message" });
+    await routeMarketplaceGroupMessage({ ...message, messageId: "acceptance-provider", senderId: "seller@example.com", text: "Sounds great" }, repo);
+    expect(repo.confirmDeal).toHaveBeenCalledTimes(1);
+    expect(repo.confirmDeal).toHaveBeenCalledWith(expect.objectContaining({ conversation: fixture, priceCents: 3500, confidence: 0.95 }));
+  });
+  it("does not create a deal from a weak acknowledgement or same-party context", async () => {
+    const repo = repository();
+    vi.mocked(repo.previousOffer).mockResolvedValue({ role: "buyer", priceCents: 3500 });
+    await routeMarketplaceGroupMessage({ ...message, senderId: "seller@example.com", text: "cool" }, repo);
+    await routeMarketplaceGroupMessage({ ...message, messageId: "provider-2", text: "sounds good" }, repo);
+    expect(repo.confirmDeal).not.toHaveBeenCalled();
+  });
+  it("stops reprocessed provider messages before duplicate events or deals", async () => {
+    const repo = repository();
+    vi.mocked(repo.persistMessage).mockResolvedValue({ id: "message-1", replayed: true });
+    expect(await routeMarketplaceGroupMessage(message, repo)).toMatchObject({ handled: true });
+    expect(repo.persistEvents).not.toHaveBeenCalled();
+    expect(repo.confirmDeal).not.toHaveBeenCalled();
   });
   it.each([
     ["@Dibs, what was the price?", "what was the price?"],

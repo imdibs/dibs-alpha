@@ -16,6 +16,40 @@ export type ProductEvent = {
   metadata?: Record<string, string | number | boolean | null>;
 };
 
+export type CoreAnalytics = {
+  total_users: number;
+  total_introductions: number;
+  total_listings: number;
+  total_deals: number;
+  active_listings: number;
+  draft_listings: number;
+  sold_listings: number;
+};
+
+async function exactCount(query: PromiseLike<{ count: number | null; error: { message?: string } | null }>, metric: string): Promise<number> {
+  const result = await query;
+  if (result.error || result.count === null) throw new Error(`Could not count ${metric}.`);
+  return result.count;
+}
+
+export async function getCoreAnalytics(): Promise<CoreAnalytics> {
+  const client = db();
+  const count = (table: string) => client.from(table).select("id", { count: "exact", head: true });
+  const [totalUsers, totalIntroductions, totalListings, totalDeals, activeListings, draftListings, soldListings] = await Promise.all([
+    exactCount(count("users"), "users"),
+    exactCount(count("conversations").in("connection_status", ["connected", "completed"]).eq("provider_group_type", "group").not("provider_space_id", "is", null).not("provider_line", "is", null).not("buyer_provider_identity", "is", null).not("seller_provider_identity", "is", null).not("provider_introduction_message_id", "is", null).not("connected_at", "is", null), "introductions"),
+    exactCount(count("listings"), "listings"),
+    exactCount(count("deals"), "deals"),
+    exactCount(count("listings").eq("status", "active"), "active listings"),
+    exactCount(count("listings").eq("status", "draft"), "draft listings"),
+    exactCount(count("listings").eq("status", "sold"), "sold listings"),
+  ]);
+  return {
+    total_users: totalUsers, total_introductions: totalIntroductions, total_listings: totalListings, total_deals: totalDeals,
+    active_listings: activeListings, draft_listings: draftListings, sold_listings: soldListings,
+  };
+}
+
 export function postHogEventsForProductEvent(event: ProductEvent): PostHogEvent[] {
   const common = { distinctId: event.userId, properties: { source: event.source, ...event.metadata } };
   switch (event.eventName) {
