@@ -6,11 +6,13 @@ import { GrowthTimeline } from "@/components/admin/GrowthTimeline";
 import { MetricCards } from "@/components/admin/MetricCards";
 import { RangeSelector } from "@/components/admin/RangeSelector";
 import { getDealAnalytics, getGrowthTimeline, getMarketplaceFunnel, getMarketplaceOverview, getSupplyAnalytics, parseAdminRange, RANGE_LABELS } from "@/lib/admin-analytics";
+import { requireLocalAdmin } from "@/lib/local-admin";
 
 export const dynamic = "force-dynamic";
 const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 
 export default async function AdminPage({ searchParams }: { searchParams: Promise<{ range?: string | string[] }> }) {
+  await requireLocalAdmin();
   const range = parseAdminRange((await searchParams).range);
   let analytics;
   try {
@@ -30,7 +32,7 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
     <MetricCards overview={overview}/>
     <FounderPriorities overview={overview} funnel={funnel} deals={deals}/>
 
-    <section className="mc-section"><div className="mc-section-head"><div><p className="mc-kicker">Connection</p><h2>Marketplace Funnel</h2></div><p>How the selected signup cohort moves from joining Dibs to completing a deal.</p></div><Funnel stages={funnel}/></section>
+    <section className="mc-section"><div className="mc-section-head"><div><p className="mc-kicker">Selected signup cohort</p><h2>Marketplace Funnel</h2></div><p>People in this signup cohort as they move from joining Dibs to completing a deal. Cohort counts can differ from the all-time headline totals.</p></div><Funnel stages={funnel}/></section>
     <section className="mc-section"><div className="mc-section-head"><div><p className="mc-kicker">Momentum</p><h2>Growth Timeline</h2></div><p>New canonical facts per New York calendar day.</p></div><GrowthTimeline points={timeline}/></section>
     <section className="mc-section"><div className="mc-section-head"><div><p className="mc-kicker">Supply</p><h2>Supply Intelligence</h2></div><p>Current snapshot across all listings.</p></div>
       <div className="mc-breakdowns"><Breakdown title="Category" rows={supply.byCategory}/><Breakdown title="Location" rows={supply.byLocation}/><Breakdown title="Status" rows={supply.byStatus}/></div>

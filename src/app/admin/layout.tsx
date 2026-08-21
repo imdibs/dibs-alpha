@@ -1,7 +1,8 @@
-import { requireAdmin } from "@/lib/admin-auth";
+import { LiveRefresh } from "@/components/admin/LiveRefresh";
+import { requireLocalAdmin } from "@/lib/local-admin";
 import "./admin.css";
 
 export default async function AdminLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  await requireAdmin();
-  return <div className="mission-control">{children}</div>;
+  await requireLocalAdmin();
+  return <div className="mission-control"><LiveRefresh/>{children}</div>;
 }
